@@ -8,7 +8,6 @@ const families = ['haiku', 'sonnet', 'opus', 'other']
 let keyPath = ''
 let petId = ''
 let warned = false
-let paneOpen = false
 let tick = 0
 let lastSurface = 'terminal'
 let portrait = null
@@ -22,7 +21,15 @@ export function register(on) {
     if (typeof savedPet === 'string' && savedPet !== '') petId = savedPet
     $.clock.every(100, () => stepFrame($))
     $.clock.every(30000, () => refresh($))
-    if (petId) await refresh($)
+    try {
+      await $.ui.close({ id: PANE })
+    } catch (err) {}
+    if (!petId) {
+      const id = await petIdFromKey($)
+      if (id) await rememberPet($, id)
+    } else {
+      await refresh($)
+    }
     await $.command.register({
       name: 'omn',
       description: 'Show your omn pet, or set its id or SSH key',
@@ -34,51 +41,38 @@ export function register(on) {
   on('command.run', { command: 'omn' }, async ($, e) => {
     const arg = (e.args || '').trim()
     if (arg === '' || arg === 'show') {
-      await openPane($, true)
-      return {}
+      await refresh($)
+      $.ui.invalidate('ui.render')
+      return { text: petId ? 'omn ' + petId : 'usage: /omn <pet id>' }
     }
-    if (arg.startsWith('key ')) {
-      keyPath = arg.slice(4).trim()
+    if (arg.startsWith('key ') || arg.startsWith('/') || arg.startsWith('~') || arg.startsWith('.')) {
+      keyPath = arg.startsWith('key ') ? arg.slice(4).trim() : arg
       await $.store.set('sshKey', keyPath)
       warned = false
-      return { text: 'omn key ' + keyPath }
-    }
-    if (arg.startsWith('/') || arg.startsWith('~') || arg.startsWith('.')) {
-      keyPath = arg
-      await $.store.set('sshKey', keyPath)
-      warned = false
-      return { text: 'omn key ' + keyPath }
+      const id = await petIdFromKey($)
+      if (id) await rememberPet($, id)
+      return { text: id ? 'omn ' + id : 'omn key ' + keyPath }
     }
     if (/^[A-Za-z0-9_-]{8}$/.test(arg)) {
       await rememberPet($, arg)
-      await openPane($, true)
-      return {}
+      return { text: 'omn ' + arg }
     }
     return { text: 'usage: /omn <pet id> | /omn key <private-key>' }
   })
 
-  on('ui.render', { component: 'Pane' }, async ($, e, next) => {
-    if (e.requestId !== PANE) return next(e)
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (!portrait || !portrait.frames || !portrait.frames.length) return next(e)
     lastSurface = e.surface || 'terminal'
     const { Box, Text, Raster, Svg } = $.ui.resolve(e)
-    if (!portrait || !portrait.frames || !portrait.frames.length) {
-      return Text({ children: ['/omn <pet id>'] })
-    }
+    const theirs = await next(e)
     const frame = portrait.frames[tick % portrait.frames.length]
     const picture =
       lastSurface === 'terminal'
         ? Raster({ key: 'pet', columns: 16, rows: 9, cells: rasterOf(frame) })
         : Svg({ children: svgOf(frame) })
-    return Box({
-      flexDirection: 'column',
-      children: [
-        Text({ children: [portrait.name + ' · ' + portrait.status] }),
-        picture,
-        Text({
-          children: ['hunger ' + Math.round(portrait.hunger) + '  mood ' + Math.round(portrait.mood)],
-        }),
-      ],
-    })
+    const lines = [picture, meterText(Box, Text, portrait.growth)]
+    if (theirs) lines.push(theirs)
+    return Box({ flexDirection: 'column', children: lines })
   })
 
   on('turn.step', async function* ($, e, next) {
@@ -94,14 +88,27 @@ export function register(on) {
     pending.delete(id)
     pending.delete('')
     const deltas = deltasOf(bag, e.usage, e.model)
+    if (fedMark === 0 && xpOf(deltas) > 0) {
+      const n = Math.min(4, xpOf(deltas))
+      for (let i = 0; i < n; i++) queueCrumb()
+    }
+    fedTurn = ''
+    fedMark = 0
     if (xpOf(deltas) <= 0) return result
     try {
       const parsed = await post($, id, deltas)
-      if (parsed && parsed.xp > 0) $.ui.toast('omn +' + parsed.xp + ' xp')
-      if (parsed && parsed.id) {
-        await rememberPet($, parsed.id)
-        await openPane($, false)
+      if (!parsed) return result
+      // The signature is the SSH key's pet. A different id must not replace the one on screen.
+      if (parsed.id && petId && parsed.id !== petId) {
+        $.ui.log('omn kept ' + petId + '. token xp went to ' + parsed.id)
+        return result
       }
+      if (typeof parsed.growth === 'number' && portrait) {
+        portrait.growth = parsed.growth
+        $.ui.invalidate('ui.render')
+      }
+      if (parsed.xp > 0) $.ui.toast('omn +' + parsed.xp + ' xp')
+      if (parsed.id && !petId) await rememberPet($, parsed.id)
     } catch (err) {
       $.ui.log('omn xp skipped: ' + (err && err.message ? err.message : 'sign'))
     }
@@ -110,13 +117,9 @@ export function register(on) {
 }
 
 function stepFrame($) {
-  if (!paneOpen || !portrait || !portrait.frames || !portrait.frames.length) return
+  if (!portrait || !portrait.frames || !portrait.frames.length) return
   tick++
-  const frame = portrait.frames[tick % portrait.frames.length]
-  if (lastSurface === 'terminal') {
-    $.ui.blit({ requestId: PANE, key: 'pet', columns: 16, rows: 9, cells: rasterOf(frame) })
-    return
-  }
+  stepFeed()
   $.ui.invalidate('ui.render')
 }
 
@@ -126,25 +129,82 @@ async function rememberPet($, id) {
   await refresh($)
 }
 
-async function openPane($, focus) {
-  const pane = { id: PANE, title: portrait && portrait.name ? portrait.name : 'omn' }
-  if (focus) pane.focus = true
-  const opened = await $.ui.open(pane)
-  paneOpen = !opened || opened.isPlaced !== false
-}
-
 async function refresh($) {
   if (!petId) return
   const res = await $.http.fetch(SERVER + '/p/' + petId + '.json')
   if (!res.ok) return
   const data = JSON.parse(res.text)
   if (!data.frames || !data.frames.length) return
+  if (typeof data.growth !== 'number' && portrait && typeof portrait.growth === 'number') data.growth = portrait.growth
   portrait = data
-  if (paneOpen) $.ui.invalidate('ui.render')
+  $.ui.invalidate('ui.render')
+}
+
+const stageAt = [0, 500, 20000, 120000, 500000]
+const pipChars = ['▂', '▄', '▆', '█']
+const cDim = '#8a86a0'
+const cExp = '#9d8cff'
+const cOff = '#2a2640'
+const cText = '#e8e6f0'
+const cFed = '#f2b84b'
+
+function meterText(Box, Text, growth) {
+  const g = typeof growth === 'number' && isFinite(growth) ? Math.max(0, Math.round(growth)) : 0
+  const lit = signalLevel(expPct(g))
+  const on = pipChars.slice(0, lit).join('')
+  const off = pipChars.slice(lit).join('')
+  const row = [Text({ color: cDim, children: ['exp'] })]
+  if (on) row.push(Text({ color: cExp, children: [on] }))
+  if (off) row.push(Text({ color: cOff, children: [off] }))
+  row.push(Text({ color: cText, children: [compact(g)] }))
+  return Box({
+    flexDirection: 'column',
+    children: [
+      Box({ flexDirection: 'row', columnGap: 1, children: row }),
+      Text({ color: cFed, children: ['ssh omn.sh'] }),
+    ],
+  })
+}
+
+function expPct(g) {
+  let stage = 0
+  for (let i = stageAt.length - 1; i >= 0; i--) {
+    if (g >= stageAt[i]) {
+      stage = i
+      break
+    }
+  }
+  if (stage >= 4) return 100
+  const lo = stageAt[stage]
+  const hi = stageAt[stage + 1]
+  if (hi <= lo) return 100
+  const v = ((g - lo) / (hi - lo)) * 100
+  if (v < 0) return 0
+  if (v > 100) return 100
+  return v
+}
+
+function signalLevel(v) {
+  if (v <= 0) return 0
+  const n = Math.ceil(v / 25)
+  return n > 4 ? 4 : n
+}
+
+function compact(n) {
+  if (n >= 1000000000) return unit(n, 1000000000, 'B')
+  if (n >= 1000000) return unit(n, 1000000, 'M')
+  if (n >= 1000) return unit(n, 1000, 'K')
+  return String(n)
+}
+
+function unit(n, div, suffix) {
+  const whole = Math.floor(n / div)
+  const frac = Math.floor(((n % div) * 10) / div)
+  return frac === 0 ? whole + suffix : whole + '.' + frac + suffix
 }
 
 function rasterOf(b64) {
-  const raw = decodeB64(b64)
+  const raw = feedFrame(decodeB64(b64))
   const cols = 16
   const nums = []
   for (let y = 0; y < 9; y++) {
@@ -158,7 +218,7 @@ function rasterOf(b64) {
 }
 
 function svgOf(b64) {
-  const raw = decodeB64(b64)
+  const raw = feedFrame(decodeB64(b64))
   const px = 8
   let rects = ''
   for (let y = 0; y < 18; y++) {
@@ -195,6 +255,69 @@ function bytesB64(u8) {
   return btoa(s)
 }
 
+let crumbs = []
+let chomp = 0
+let spawned = 0
+let fedMark = 0
+let fedTurn = ''
+const spawnX = [7, 8, 6, 9, 7, 8]
+const mouthY = 12
+
+function feedFrom(id, bag) {
+  if (!bag) return
+  if (id !== fedTurn) {
+    fedTurn = id
+    fedMark = 0
+  }
+  const xp = xpOf(deltasOf(bag))
+  if (xp <= fedMark) return
+  let n = xp - fedMark
+  if (n > 4) n = 4
+  for (let i = 0; i < n; i++) queueCrumb()
+  fedMark = xp
+}
+
+function queueCrumb() {
+  chomp = 4
+  if (crumbs.length >= 6) return
+  crumbs.push({ x: spawnX[spawned % spawnX.length], y: -crumbs.length * 2 })
+  spawned++
+}
+
+function stepFeed() {
+  if (chomp > 0) chomp--
+  if (!crumbs.length) return
+  const live = []
+  for (const c of crumbs) {
+    c.y += 0.5
+    if (c.y < mouthY) live.push(c)
+    else chomp = 4
+  }
+  crumbs = live
+}
+
+function feedFrame(raw) {
+  if (!crumbs.length && chomp === 0) return raw
+  const buf = new Uint8Array(raw)
+  if (chomp > 0 && chomp % 2 === 0) hop(buf)
+  for (const c of crumbs) {
+    const x = c.x
+    const y = Math.floor(c.y)
+    if (y < 0 || y >= 18 || x < 0 || x >= 16) continue
+    const i = (y * 16 + x) * 3
+    buf[i] = 0xf2
+    buf[i + 1] = 0xb8
+    buf[i + 2] = 0x4b
+  }
+  return buf
+}
+
+function hop(buf) {
+  const row = 16 * 3
+  const copy = buf.slice()
+  for (let y = 0; y < 17; y++) buf.set(copy.subarray((y + 1) * row, (y + 2) * row), y * row)
+}
+
 function note(e, result) {
   const u = result && result.usage
   if (!u) return
@@ -212,6 +335,7 @@ function note(e, result) {
   cur.cache_r += num(u.cache_read_input_tokens)
   cur.cache_w += num(u.cache_creation_input_tokens)
   bag[fam] = cur
+  feedFrom(id, bag)
 }
 
 function deltasOf(bag, usage, model) {
@@ -326,6 +450,16 @@ function textOf(v) {
 function nonceOf(id) {
   const s = String(id || '')
   return /^[A-Za-z0-9_-]{1,128}$/.test(s) ? s : ''
+}
+
+async function petIdFromKey($) {
+  const key = await resolveKey($)
+  if (!key) return ''
+  const run = await $.process.run(['ssh-keygen', '-lf', key])
+  if (!run || run.exitCode !== 0) return ''
+  const found = String(run.stdout || '').match(/SHA256:([A-Za-z0-9+/]+)/)
+  if (!found) return ''
+  return found[1].slice(0, 8).replaceAll('+', '-').replaceAll('/', '_')
 }
 
 async function resolveKey($) {

@@ -1,6 +1,6 @@
 # omn for Claude Code
 
-Shows your [omn.sh](https://omn.sh) pet in Claude Code, and grants it growth from the tokens a turn bills.
+Shows your [omn.sh](https://omn.sh) pet in Claude Code, and grants it growth and hunger from the tokens a turn bills.
 
 ```text
 /plugin marketplace add SamuelFerracini/omn-claude
