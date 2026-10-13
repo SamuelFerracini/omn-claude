@@ -108,7 +108,7 @@ export function register(on) {
 
   on('turn.step', async function* ($, e, next) {
     const result = yield* next(e)
-    note(e, result)
+    tally(e, result)
     return result
   })
 
@@ -381,7 +381,7 @@ function hop(buf) {
   for (let y = 0; y < 17; y++) buf.set(copy.subarray((y + 1) * row, (y + 2) * row), y * row)
 }
 
-function note(e, result) {
+function tally(e, result) {
   const u = result && result.usage
   if (!u) return
   const id = e.turnId || ''
