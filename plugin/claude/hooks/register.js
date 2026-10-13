@@ -11,16 +11,28 @@ let warned = false
 let tick = 0
 let lastSurface = 'terminal'
 let portrait = null
+let wakeFrom = null
+let wakeLeft = 0
+let note = ''
+let noteLeft = 0
 const pending = new Map()
+const wakeStill = 14
+const wakeStir = 8
+let sessionLive = false
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
+    sessionLive = true
     const savedKey = await $.store.get('sshKey')
     if (typeof savedKey === 'string' && savedKey !== '') keyPath = savedKey
     const savedPet = await $.store.get('petId')
     if (typeof savedPet === 'string' && savedPet !== '') petId = savedPet
     $.clock.every(100, () => stepFrame($))
-    $.clock.every(30000, () => refresh($))
+    $.clock.every(30000, () => {
+      if (!sessionLive) return
+      postSession($, 'ping')
+      refresh($)
+    })
     try {
       await $.ui.close({ id: PANE })
     } catch (err) {}
@@ -30,11 +42,29 @@ export function register(on) {
     } else {
       await refresh($)
     }
+    const held = await $.store.get('claudeAwake')
+    if (portrait && portrait.status === 'sleeping' && held !== '1') beginWake()
+    await postSession($, 'open')
+    await $.store.set('claudeAwake', '1')
+    if (wakeLeft === 0) await refresh($)
     await $.command.register({
       name: 'omn',
       description: 'Show your omn pet, or set its id or SSH key',
       argumentHint: '[pet id | key <path>]',
     })
+    return next(e)
+  })
+
+  on('session.end', async ($, e, next) => {
+    sessionLive = false
+    wakeLeft = 0
+    wakeFrom = null
+    note = ''
+    noteLeft = 0
+    try {
+      await postSession($, 'close')
+      await $.store.set('claudeAwake', '')
+    } catch (err) {}
     return next(e)
   })
 
@@ -65,12 +95,13 @@ export function register(on) {
     lastSurface = e.surface || 'terminal'
     const { Box, Text, Raster, Svg } = $.ui.resolve(e)
     const theirs = await next(e)
-    const frame = portrait.frames[tick % portrait.frames.length]
+    const src = wakeFrom || portrait
+    const frame = src.frames[tick % src.frames.length]
     const picture =
       lastSurface === 'terminal'
         ? Raster({ key: 'pet', columns: 16, rows: 9, cells: rasterOf(frame) })
         : Svg({ children: svgOf(frame) })
-    const lines = [picture, meterText(Box, Text, portrait.growth)]
+    const lines = [picture, meterText(Box, Text, (wakeFrom || portrait).growth)]
     if (theirs) lines.push(theirs)
     return Box({ flexDirection: 'column', children: lines })
   })
@@ -87,7 +118,13 @@ export function register(on) {
     const bag = pending.get(id) || pending.get('')
     pending.delete(id)
     pending.delete('')
-    const deltas = deltasOf(bag, e.usage, e.model)
+    // Crumbs during the turn come from each request. The save uses the turn
+    // total when Claude sends one, so the meal in the database is the tokens
+    // the pet was fed, not a second copy of the same steps.
+    const turnUsage = e.usage || (result && result.usage)
+    const turnModel = e.model || (result && result.model)
+    const turnDeltas = deltasOf(null, turnUsage, turnModel)
+    const deltas = clampDeltas(xpOf(turnDeltas) > 0 ? turnDeltas : deltasOf(bag))
     if (fedMark === 0 && xpOf(deltas) > 0) {
       const n = Math.min(4, xpOf(deltas))
       for (let i = 0; i < n; i++) queueCrumb()
@@ -116,10 +153,37 @@ export function register(on) {
   })
 }
 
+function beginWake() {
+  wakeFrom = portrait
+  wakeLeft = wakeStill + wakeStir
+}
+
+function stirring() {
+  return wakeFrom && wakeLeft > 0 && wakeLeft <= wakeStir
+}
+
 function stepFrame($) {
-  if (!portrait || !portrait.frames || !portrait.frames.length) return
+  const src = wakeFrom || portrait
+  if (!src || !src.frames || !src.frames.length) return
   tick++
   stepFeed()
+  if (wakeLeft > 0) {
+    wakeLeft--
+    if (wakeLeft === 0) finishWake($)
+  } else if (noteLeft > 0) {
+    noteLeft--
+    if (noteLeft === 0) note = ''
+  }
+  $.ui.invalidate('ui.render')
+}
+
+async function finishWake($) {
+  try {
+    await refresh($)
+  } catch (err) {}
+  wakeFrom = null
+  note = 'awake!'
+  noteLeft = 24
   $.ui.invalidate('ui.render')
 }
 
@@ -130,8 +194,8 @@ async function rememberPet($, id) {
 }
 
 async function refresh($) {
-  if (!petId) return
-  const res = await $.http.fetch(SERVER + '/p/' + petId + '.json')
+  if (wakeLeft > 0 || !petId) return
+  const res = await $.http.fetch(SERVER + '/p/' + petId + '.json?t=' + Date.now())
   if (!res.ok) return
   const data = JSON.parse(res.text)
   if (!data.frames || !data.frames.length) return
@@ -157,13 +221,10 @@ function meterText(Box, Text, growth) {
   if (on) row.push(Text({ color: cExp, children: [on] }))
   if (off) row.push(Text({ color: cOff, children: [off] }))
   row.push(Text({ color: cText, children: [compact(g)] }))
-  return Box({
-    flexDirection: 'column',
-    children: [
-      Box({ flexDirection: 'row', columnGap: 1, children: row }),
-      Text({ color: cFed, children: ['ssh omn.sh'] }),
-    ],
-  })
+  const lines = [Box({ flexDirection: 'row', columnGap: 1, children: row })]
+  if (note) lines.push(Text({ color: cFed, children: [note] }))
+  lines.push(Text({ color: cFed, children: ['ssh omn.sh'] }))
+  return Box({ flexDirection: 'column', children: lines })
 }
 
 function expPct(g) {
@@ -205,6 +266,7 @@ function unit(n, div, suffix) {
 
 function rasterOf(b64) {
   const raw = feedFrame(decodeB64(b64))
+  if (stirring() && tick % 2 === 0) hop(raw)
   const cols = 16
   const nums = []
   for (let y = 0; y < 9; y++) {
@@ -219,6 +281,7 @@ function rasterOf(b64) {
 
 function svgOf(b64) {
   const raw = feedFrame(decodeB64(b64))
+  if (stirring() && tick % 2 === 0) hop(raw)
   const px = 8
   let rects = ''
   for (let y = 0; y < 18; y++) {
@@ -370,6 +433,29 @@ function num(n) {
   return typeof n === 'number' && n > 0 ? Math.floor(n) : 0
 }
 
+const maxToken = 100000000
+
+function clampDeltas(deltas) {
+  const out = []
+  for (const d of deltas) {
+    const row = {
+      family: d.family,
+      in: capToken(d.in),
+      out: capToken(d.out),
+      cache_r: capToken(d.cache_r),
+      cache_w: capToken(d.cache_w),
+    }
+    if (row.in + row.out + row.cache_r + row.cache_w <= 0) continue
+    out.push(row)
+  }
+  return out
+}
+
+function capToken(n) {
+  n = num(n)
+  return n > maxToken ? maxToken : n
+}
+
 function xpOf(deltas) {
   let n = 0
   for (const d of deltas) {
@@ -399,9 +485,48 @@ function canonical(pubkey, ts, nonce, deltas) {
   return s + ']}'
 }
 
-async function post($, turnId, deltas) {
-  const nonce = nonceOf(turnId)
-  if (!nonce) throw new Error('turn id')
+async function postSession($, op) {
+  const nonce = sessionNonce()
+  try {
+    const signed = await signPayload($, nonce, (pubkey, ts) => sessionCanonical(pubkey, ts, nonce, op))
+    if (!signed) return
+    const res = await $.http.fetch(SERVER + '/v1/claude/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        pubkey: signed.pubkey,
+        ts: signed.ts,
+        nonce,
+        op,
+        sig: signed.sig,
+      }),
+    })
+    if (res.status === 401 || res.status === 404) return
+    if (!res.ok) throw new Error('omn ' + res.status)
+  } catch (err) {
+    if (op === 'open') $.ui.log('omn stay-awake skipped: ' + (err && err.message ? err.message : 'sign'))
+  }
+}
+
+function sessionNonce() {
+  return ('s' + Date.now().toString(36) + Math.random().toString(36).slice(2)).slice(0, 64)
+}
+
+function sessionCanonical(pubkey, ts, nonce, op) {
+  return (
+    '{"pubkey":' +
+    JSON.stringify(pubkey) +
+    ',"ts":' +
+    ts +
+    ',"nonce":' +
+    JSON.stringify(nonce) +
+    ',"op":' +
+    JSON.stringify(op) +
+    '}'
+  )
+}
+
+async function signPayload($, nonce, bodyOf) {
   const key = await resolveKey($)
   if (!key) {
     if (!warned) {
@@ -414,7 +539,7 @@ async function post($, turnId, deltas) {
   if (pubRun.exitCode !== 0) throw new Error('ssh-keygen -y')
   const pubkey = String(pubRun.stdout || '').trim()
   const ts = Math.floor(Date.now() / 1000)
-  const body = canonical(pubkey, ts, nonce, deltas)
+  const body = bodyOf(pubkey, ts)
   const home = await $.env.get('HOME')
   const dir = String(home || '') + '/.config/omn'
   await $.process.run(['mkdir', '-p', dir])
@@ -424,15 +549,23 @@ async function post($, turnId, deltas) {
   if (signed.exitCode !== 0) throw new Error('ssh-keygen -Y sign')
   const armor = textOf(await $.fs.read(path + '.sig'))
   await $.process.run(['rm', '-f', path, path + '.sig'])
+  return { pubkey, ts, sig: String(armor) }
+}
+
+async function post($, turnId, deltas) {
+  const nonce = nonceOf(turnId)
+  if (!nonce) throw new Error('turn id')
+  const signed = await signPayload($, nonce, (pubkey, ts) => canonical(pubkey, ts, nonce, deltas))
+  if (!signed) return null
   const res = await $.http.fetch(SERVER + '/v1/claude', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      pubkey,
-      ts,
+      pubkey: signed.pubkey,
+      ts: signed.ts,
       nonce,
       deltas,
-      sig: String(armor),
+      sig: signed.sig,
     }),
   })
   if (res.status === 401) return null
@@ -448,8 +581,10 @@ function textOf(v) {
 }
 
 function nonceOf(id) {
-  const s = String(id || '')
-  return /^[A-Za-z0-9_-]{1,128}$/.test(s) ? s : ''
+  const raw = String(id || '')
+  const s = raw.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 120)
+  if (s.length > 0) return s
+  return 't' + Date.now().toString(36)
 }
 
 async function petIdFromKey($) {
