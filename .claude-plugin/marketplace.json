@@ -1,0 +1,12 @@
+{
+  "name": "omn-sh",
+  "description": "omn.sh pet inside Claude Code",
+  "owner": { "name": "Samuel Ferracini" },
+  "plugins": [
+    {
+      "name": "omn",
+      "source": "./plugin/claude",
+      "description": "Shows your omn.sh pet and grants growth from Claude Code token usage"
+    }
+  ]
+}
