@@ -15,6 +15,9 @@ let wakeFrom = null
 let wakeLeft = 0
 let note = ''
 let noteLeft = 0
+let evolveFrom = null
+let evolveLeft = 0
+const evolveTicks = 50
 const pending = new Map()
 const wakeStill = 14
 const wakeStir = 8
@@ -62,6 +65,8 @@ export function register(on) {
     sessionLive = false
     wakeLeft = 0
     wakeFrom = null
+    evolveLeft = 0
+    evolveFrom = null
     note = ''
     noteLeft = 0
     try {
@@ -98,7 +103,7 @@ export function register(on) {
     lastSurface = e.surface || 'terminal'
     const { Box, Text, Raster, Svg } = $.ui.resolve(e)
     const theirs = await next(e)
-    const src = wakeFrom || portrait
+    const src = shownPortrait()
     const frame = src.frames[tick % src.frames.length]
     const picture =
       lastSurface === 'terminal'
@@ -144,7 +149,9 @@ export function register(on) {
         return result
       }
       if (typeof parsed.growth === 'number' && portrait) {
-        portrait.growth = parsed.growth
+        // A new stage needs the new frames. refresh fetches them and plays the evolve.
+        if (stageOf(parsed.growth) > stageOf(portrait.growth)) await refresh($, parsed.growth)
+        else portrait.growth = parsed.growth
         $.ui.invalidate('ui.render')
       }
       if (parsed.xp > 0) $.ui.toast('omn +' + parsed.xp + ' xp')
@@ -184,6 +191,15 @@ function stirring() {
   return wakeFrom && wakeLeft > 0 && wakeLeft <= wakeStir
 }
 
+function shownPortrait() {
+  if (evolveFrom && evolveLeft > 0) {
+    // Flip between the old and new form, faster as it nears the end.
+    const period = Math.max(1, Math.ceil(evolveLeft / 10))
+    return Math.floor(evolveLeft / period) % 2 ? evolveFrom : portrait
+  }
+  return wakeFrom || portrait
+}
+
 function stepFrame($) {
   const src = wakeFrom || portrait
   if (!src || !src.frames || !src.frames.length) return
@@ -192,6 +208,13 @@ function stepFrame($) {
   if (wakeLeft > 0) {
     wakeLeft--
     if (wakeLeft === 0) finishWake($)
+  } else if (evolveLeft > 0) {
+    evolveLeft--
+    if (evolveLeft === 0) {
+      evolveFrom = null
+      note = 'evolved!'
+      noteLeft = 30
+    }
   } else if (noteLeft > 0) {
     noteLeft--
     if (noteLeft === 0) note = ''
@@ -215,13 +238,18 @@ async function rememberPet($, id) {
   await refresh($)
 }
 
-async function refresh($) {
+async function refresh($, growth) {
   if (wakeLeft > 0 || !petId) return
   const res = await $.http.fetch(SERVER + '/p/' + petId + '.json?t=' + Date.now())
   if (!res.ok) return
   const data = JSON.parse(res.text)
   if (!data.frames || !data.frames.length) return
+  if (typeof data.growth !== 'number' && typeof growth === 'number') data.growth = growth
   if (typeof data.growth !== 'number' && portrait && typeof portrait.growth === 'number') data.growth = portrait.growth
+  if (portrait && typeof portrait.growth === 'number' && !evolveFrom && stageOf(data.growth) > stageOf(portrait.growth)) {
+    evolveFrom = portrait
+    evolveLeft = evolveTicks
+  }
   portrait = data
   $.ui.invalidate('ui.render')
 }
@@ -249,14 +277,14 @@ function meterText(Box, Text, growth) {
   return Box({ flexDirection: 'column', children: lines })
 }
 
+function stageOf(g) {
+  if (typeof g !== 'number') return 0
+  for (let i = stageAt.length - 1; i >= 0; i--) if (g >= stageAt[i]) return i
+  return 0
+}
+
 function expPct(g) {
-  let stage = 0
-  for (let i = stageAt.length - 1; i >= 0; i--) {
-    if (g >= stageAt[i]) {
-      stage = i
-      break
-    }
-  }
+  const stage = stageOf(g)
   if (stage >= 4) return 100
   const lo = stageAt[stage]
   const hi = stageAt[stage + 1]
