@@ -535,9 +535,13 @@ async function signPayload($, nonce, bodyOf) {
     }
     return null
   }
-  const pubRun = await $.process.run(['ssh-keygen', '-y', '-f', key])
-  if (pubRun.exitCode !== 0) throw new Error('ssh-keygen -y')
-  const pubkey = String(pubRun.stdout || '').trim()
+  // A passphrase key cannot be opened without a tty. Its .pub plus ssh-agent signs instead.
+  const pub = key + '.pub'
+  const hasPub = await $.fs.exists(pub)
+  const signKey = hasPub === true || (hasPub && hasPub.value === true) ? pub : key
+  const pubRun = signKey === pub ? { exitCode: 0, stdout: textOf(await $.fs.read(pub)) } : await $.process.run(['ssh-keygen', '-y', '-f', key])
+  if (pubRun.exitCode !== 0) throw new Error('ssh-keygen -y (passphrase key? add ' + pub + ')')
+  const pubkey = String(pubRun.stdout || '').trim().split(/\s+/).slice(0, 2).join(' ')
   const ts = Math.floor(Date.now() / 1000)
   const body = bodyOf(pubkey, ts)
   const home = await $.env.get('HOME')
@@ -545,7 +549,7 @@ async function signPayload($, nonce, bodyOf) {
   await $.process.run(['mkdir', '-p', dir])
   const path = dir + '/turn-' + nonce
   await $.fs.write(path, body)
-  const signed = await $.process.run(['ssh-keygen', '-Y', 'sign', '-f', key, '-n', 'omn', path])
+  const signed = await $.process.run(['ssh-keygen', '-Y', 'sign', '-f', signKey, '-n', 'omn', path])
   if (signed.exitCode !== 0) throw new Error('ssh-keygen -Y sign')
   const armor = textOf(await $.fs.read(path + '.sig'))
   await $.process.run(['rm', '-f', path, path + '.sig'])
