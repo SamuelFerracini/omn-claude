@@ -24,6 +24,14 @@ const wakeStir = 8
 let sessionLive = false
 const sessionId = sessionNonce()
 const leaseMs = 90000
+let quiet = 0
+let idleHop = 0
+let sparkLeft = 0
+let lastMealAt = 0
+let combo = 0
+const comboWindow = 180000
+const quietAt = 80
+let bits = []
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -69,6 +77,12 @@ export function register(on) {
     evolveFrom = null
     note = ''
     noteLeft = 0
+    bits = []
+    crumbs = []
+    chomp = 0
+    idleHop = 0
+    sparkLeft = 0
+    quiet = 0
     try {
       // Other Claude sessions still open keep the pet awake. Only the last one puts it to sleep.
       if ((await holdSession($, false)) === 0) await postSession($, 'close')
@@ -133,13 +147,15 @@ export function register(on) {
     const turnModel = e.model || (result && result.model)
     const turnDeltas = deltasOf(null, turnUsage, turnModel)
     const deltas = clampDeltas(xpOf(turnDeltas) > 0 ? turnDeltas : deltasOf(bag))
+    const fam = mealFamily(deltas)
     if (fedMark === 0 && xpOf(deltas) > 0) {
       const n = Math.min(4, xpOf(deltas))
-      for (let i = 0; i < n; i++) queueCrumb()
+      for (let i = 0; i < n; i++) queueCrumb(fam)
     }
     fedTurn = ''
     fedMark = 0
     if (xpOf(deltas) <= 0) return result
+    const wasSleeping = !!(portrait && portrait.status === 'sleeping' && wakeLeft === 0)
     try {
       const parsed = await post($, id, deltas)
       if (!parsed) return result
@@ -150,11 +166,18 @@ export function register(on) {
       }
       if (typeof parsed.growth === 'number' && portrait) {
         // A new stage needs the new frames. refresh fetches them and plays the evolve.
-        if (stageOf(parsed.growth) > stageOf(portrait.growth)) await refresh($, parsed.growth)
-        else portrait.growth = parsed.growth
+        // A sleeper keeps the old frames until the wake animation refetches.
+        const stageUp = stageOf(parsed.growth) > stageOf(portrait.growth)
+        if (stageUp && !wasSleeping) await refresh($, parsed.growth)
+        else if (!stageUp) portrait.growth = parsed.growth
         $.ui.invalidate('ui.render')
       }
-      if (parsed.xp > 0) $.ui.toast('omn +' + parsed.xp + ' xp')
+      if (wasSleeping) beginWake()
+      applyCare(portrait, parsed)
+      if (parsed.xp > 0) {
+        $.ui.toast('omn +' + parsed.xp + ' xp')
+        noteMeal(fam, parsed.xp)
+      }
       if (parsed.id && !petId) await rememberPet($, parsed.id)
     } catch (err) {
       $.ui.log('omn xp skipped: ' + (err && err.message ? err.message : 'sign'))
@@ -205,6 +228,9 @@ function stepFrame($) {
   if (!src || !src.frames || !src.frames.length) return
   tick++
   stepFeed()
+  stepBits()
+  if (sparkLeft > 0) sparkLeft--
+  if (idleHop > 0) idleHop--
   if (wakeLeft > 0) {
     wakeLeft--
     if (wakeLeft === 0) finishWake($)
@@ -212,6 +238,7 @@ function stepFrame($) {
     evolveLeft--
     if (evolveLeft === 0) {
       evolveFrom = null
+      bits = []
       note = 'evolved!'
       noteLeft = 30
     }
@@ -219,7 +246,16 @@ function stepFrame($) {
     noteLeft--
     if (noteLeft === 0) note = ''
   }
+  if (busy()) quiet = 0
+  else {
+    quiet++
+    if (quiet === quietAt) idleHop = 6
+  }
   $.ui.invalidate('ui.render')
+}
+
+function busy() {
+  return wakeLeft > 0 || evolveLeft > 0 || sparkLeft > 0 || chomp > 0 || crumbs.length > 0 || bits.length > 0 || idleHop > 0
 }
 
 async function finishWake($) {
@@ -249,6 +285,7 @@ async function refresh($, growth) {
   if (portrait && typeof portrait.growth === 'number' && !evolveFrom && stageOf(data.growth) > stageOf(portrait.growth)) {
     evolveFrom = portrait
     evolveLeft = evolveTicks
+    burst()
   }
   portrait = data
   $.ui.invalidate('ui.render')
@@ -258,23 +295,116 @@ const stageAt = [0, 500, 20000, 120000, 500000]
 const pipChars = ['▂', '▄', '▆', '█']
 const cDim = '#8a86a0'
 const cExp = '#9d8cff'
+const cPulse = '#efeaff'
 const cOff = '#2a2640'
 const cText = '#e8e6f0'
 const cFed = '#f2b84b'
+const cHunger = '#6fbf8b'
+const cLow = '#e07070'
+const streakGold = 7
 
 function meterText(Box, Text, growth) {
   const g = typeof growth === 'number' && isFinite(growth) ? Math.max(0, Math.round(growth)) : 0
-  const lit = signalLevel(expPct(g))
-  const on = pipChars.slice(0, lit).join('')
+  const pct = expPct(g)
+  const lit = signalLevel(pct)
+  const pulse = pct > 85 && pct < 100 && tick % 8 < 4
+  const on = pipChars.slice(0, lit)
   const off = pipChars.slice(lit).join('')
-  const row = [Text({ color: cDim, children: ['exp'] })]
-  if (on) row.push(Text({ color: cExp, children: [on] }))
+  const row = []
+  const name = cleanLabel(portrait && portrait.name, 16)
+  if (name) row.push(Text({ color: cText, children: [name] }))
+  row.push(Text({ color: cDim, children: ['exp'] }))
+  if (pulse && on.length) {
+    const head = on.slice(0, -1).join('')
+    if (head) row.push(Text({ color: cExp, children: [head] }))
+    row.push(Text({ color: cPulse, children: [on[on.length - 1]] }))
+  } else if (on.length) {
+    row.push(Text({ color: cExp, children: [on.join('')] }))
+  }
   if (off) row.push(Text({ color: cOff, children: [off] }))
-  row.push(Text({ color: cText, children: [compact(g)] }))
+  row.push(Text({ color: cText, children: [stageLeft(g)] }))
   const lines = [Box({ flexDirection: 'row', columnGap: 1, children: row })]
+  const care = careLine(Box, Text)
+  if (care) lines.push(care)
   if (note) lines.push(Text({ color: cFed, children: [note] }))
   lines.push(Text({ color: cFed, children: ['ssh omn.sh'] }))
   return Box({ flexDirection: 'column', children: lines })
+}
+
+function careLine(Box, Text) {
+  const p = portrait
+  if (!p) return null
+  const kids = []
+  const hp = hungerPct(p.hunger)
+  if (hp !== null) {
+    const lit = signalLevel(hp)
+    const on = pipChars.slice(0, lit).join('')
+    const off = pipChars.slice(lit).join('')
+    kids.push(Text({ color: cDim, children: ['hunger'] }))
+    if (on) kids.push(Text({ color: hp < 25 ? cLow : cHunger, children: [on] }))
+    if (off) kids.push(Text({ color: cOff, children: [off] }))
+  }
+  const mood = cleanLabel(p.mood, 24)
+  if (mood) kids.push(Text({ color: cDim, children: [mood] }))
+  if (typeof p.streak === 'number' && isFinite(p.streak) && p.streak > 0) {
+    kids.push(Text({ color: cDim, children: ['streak ' + Math.round(p.streak)] }))
+  }
+  if (!kids.length) return null
+  return Box({ flexDirection: 'row', columnGap: 1, children: kids })
+}
+
+function stageLeft(g) {
+  const stage = stageOf(g)
+  if (stage >= 4) return compact(g)
+  const left = stageAt[stage + 1] - g
+  return compact(left < 0 ? 0 : left) + ' left'
+}
+
+function hungerPct(h) {
+  if (typeof h !== 'number' || !isFinite(h) || h < 0) return null
+  // Below 1 is a fraction of full. 1 and above are a percent.
+  if (h > 0 && h < 1) return h * 100
+  if (h <= 100) return h
+  return null
+}
+
+function cleanLabel(s, max) {
+  if (typeof s !== 'string') return ''
+  const t = s.replace(/\s+/g, ' ').trim()
+  if (!t || t.length > max) return ''
+  return t
+}
+
+function noteMeal(fam, xp) {
+  const now = Date.now()
+  combo = now - lastMealAt < comboWindow && combo > 0 ? combo + 1 : 1
+  lastMealAt = now
+  const label = fam === 'opus' || fam === 'sonnet' || fam === 'haiku' ? fam : 'meal'
+  note = label + ' +' + xp + (combo > 1 ? ' x' + combo : '')
+  noteLeft = 36
+  quiet = 0
+}
+
+function applyCare(dst, src) {
+  if (!dst || !src) return
+  for (const k of ['name', 'hunger', 'mood', 'streak', 'gleam', 'status']) {
+    if (src[k] !== undefined && src[k] !== null) dst[k] = src[k]
+  }
+}
+
+function goldEdge() {
+  const p = portrait
+  if (!p) return false
+  if (stageOf(p.growth) >= 4) return true
+  if (gleaming(p)) return true
+  return typeof p.streak === 'number' && p.streak >= streakGold
+}
+
+function gleaming(p) {
+  const g = p && p.gleam
+  if (g === true || g === 1) return true
+  if (typeof g === 'string' && g !== '' && g !== '0' && g !== 'false') return true
+  return false
 }
 
 function stageOf(g) {
@@ -315,8 +445,7 @@ function unit(n, div, suffix) {
 }
 
 function rasterOf(b64) {
-  const raw = feedFrame(decodeB64(b64))
-  if (stirring() && tick % 2 === 0) hop(raw)
+  const raw = present(b64)
   const cols = 16
   const nums = []
   for (let y = 0; y < 9; y++) {
@@ -330,8 +459,7 @@ function rasterOf(b64) {
 }
 
 function svgOf(b64) {
-  const raw = feedFrame(decodeB64(b64))
-  if (stirring() && tick % 2 === 0) hop(raw)
+  const raw = present(b64)
   const px = 8
   let rects = ''
   for (let y = 0; y < 18; y++) {
@@ -376,25 +504,63 @@ let fedTurn = ''
 const spawnX = [7, 8, 6, 9, 7, 8]
 const mouthY = 12
 
+const crumbRgb = {
+  haiku: [0x7e, 0xc8, 0xe3],
+  sonnet: [0xf2, 0xb8, 0x4b],
+  opus: [0xff, 0x5a, 0x36],
+  other: [0xc8, 0xc4, 0xd4],
+}
+const bitColors = [
+  [0xf2, 0xb8, 0x4b],
+  [0x9d, 0x8c, 0xff],
+  [0xff, 0x5a, 0x36],
+  [0xe8, 0xe6, 0xf0],
+]
+const sparkPx = [
+  [14, 2],
+  [1, 3],
+  [14, 5],
+]
+
 function feedFrom(id, bag) {
   if (!bag) return
   if (id !== fedTurn) {
     fedTurn = id
     fedMark = 0
   }
-  const xp = xpOf(deltasOf(bag))
+  const deltas = deltasOf(bag)
+  const xp = xpOf(deltas)
   if (xp <= fedMark) return
   let n = xp - fedMark
   if (n > 4) n = 4
-  for (let i = 0; i < n; i++) queueCrumb()
+  const fam = mealFamily(deltas)
+  for (let i = 0; i < n; i++) queueCrumb(fam)
   fedMark = xp
 }
 
-function queueCrumb() {
-  chomp = 4
+function mealFamily(deltas) {
+  let best = ''
+  let bestN = -1
+  const rank = { opus: 4, sonnet: 3, haiku: 2, other: 1 }
+  for (const d of deltas || []) {
+    const m = d.family === 'opus' ? 4 : d.family === 'sonnet' ? 2 : 1
+    const n = m * (num(d.out) + num(d.in) + num(d.cache_w) + Math.floor(num(d.cache_r) / 25))
+    const r = rank[d.family] || 0
+    if (n > bestN || (n === bestN && r > (rank[best] || 0))) {
+      bestN = n
+      best = d.family
+    }
+  }
+  return best
+}
+
+function queueCrumb(kind) {
+  const k = kind === 'opus' || kind === 'haiku' || kind === 'sonnet' ? kind : 'other'
+  chomp = k === 'opus' ? 8 : 4
   if (crumbs.length >= 6) return
-  crumbs.push({ x: spawnX[spawned % spawnX.length], y: -crumbs.length * 2 })
+  crumbs.push({ x: spawnX[spawned % spawnX.length], y: -crumbs.length * 2, kind: k })
   spawned++
+  quiet = 0
 }
 
 function stepFeed() {
@@ -404,25 +570,116 @@ function stepFeed() {
   for (const c of crumbs) {
     c.y += 0.5
     if (c.y < mouthY) live.push(c)
-    else chomp = 4
+    else chomp = c.kind === 'opus' ? 8 : 4
   }
   crumbs = live
 }
 
-function feedFrame(raw) {
-  if (!crumbs.length && chomp === 0) return raw
-  const buf = new Uint8Array(raw)
-  if (chomp > 0 && chomp % 2 === 0) hop(buf)
-  for (const c of crumbs) {
-    const x = c.x
-    const y = Math.floor(c.y)
-    if (y < 0 || y >= 18 || x < 0 || x >= 16) continue
-    const i = (y * 16 + x) * 3
-    buf[i] = 0xf2
-    buf[i + 1] = 0xb8
-    buf[i + 2] = 0x4b
+function burst() {
+  bits = []
+  for (let i = 0; i < 8; i++) {
+    bits.push({
+      x: 4 + (i % 8),
+      y: 6,
+      vx: i < 4 ? -0.35 - (i % 3) * 0.15 : 0.35 + (i % 3) * 0.15,
+      vy: -0.8 - (i % 4) * 0.15,
+      c: bitColors[i % bitColors.length],
+      life: 28,
+    })
   }
+}
+
+function stepBits() {
+  if (!bits.length) return
+  const live = []
+  for (const b of bits) {
+    b.life--
+    b.x += b.vx
+    b.y += b.vy
+    b.vy += 0.08
+    if (b.life > 0 && b.y < 18 && b.x > -1 && b.x < 16) live.push(b)
+  }
+  bits = live
+}
+
+function present(b64) {
+  const buf = new Uint8Array(decodeB64(b64))
+  if (liftNow()) hop(buf)
+  paintCrumbs(buf)
+  paintBits(buf)
+  paintSpark(buf)
+  paintSleep(buf)
+  if (goldEdge()) paintEdge(buf)
   return buf
+}
+
+function liftNow() {
+  if (tick % 2 !== 0) return false
+  return stirring() || idleHop > 0 || chomp > 0
+}
+
+function paintCrumbs(buf) {
+  for (const c of crumbs) {
+    const rgb = crumbRgb[c.kind] || crumbRgb.other
+    const y = Math.floor(c.y)
+    paint(buf, c.x, y, rgb)
+    if (c.kind === 'opus') paint(buf, c.x, y + 1, rgb)
+  }
+}
+
+function paintBits(buf) {
+  for (const b of bits) paint(buf, Math.round(b.x), Math.round(b.y), b.c)
+}
+
+function paintSpark(buf) {
+  if (sparkLeft <= 0 || sparkLeft % 2 === 0) return
+  const p = sparkPx[Math.floor(sparkLeft / 2) % sparkPx.length]
+  paint(buf, p[0], p[1], [0xe8, 0xe6, 0xf0])
+}
+
+function paintSleep(buf) {
+  if (!showZ()) return
+  const c = [0xc8, 0xc4, 0xdc]
+  zed(buf, 12, 1, c)
+  zed(buf, 9, 3, c)
+}
+
+function showZ() {
+  if (note === 'awake!' || note === 'evolved!') return false
+  if (wakeLeft > 0 || wakeFrom) return true
+  return !!(portrait && portrait.status === 'sleeping')
+}
+
+function zed(buf, x, y, c) {
+  paint(buf, x, y, c)
+  paint(buf, x + 1, y, c)
+  paint(buf, x + 2, y, c)
+  paint(buf, x + 1, y + 1, c)
+  paint(buf, x, y + 2, c)
+  paint(buf, x + 1, y + 2, c)
+  paint(buf, x + 2, y + 2, c)
+}
+
+function paintEdge(buf) {
+  const g = [0xf2, 0xb8, 0x4b]
+  for (let x = 0; x < 16; x++) {
+    paint(buf, x, 0, g)
+    paint(buf, x, 17, g)
+  }
+  for (let y = 0; y < 18; y++) {
+    paint(buf, 0, y, g)
+    paint(buf, 15, y, g)
+  }
+}
+
+function paint(buf, x, y, rgb) {
+  const px = Math.round(x)
+  const py = Math.round(y)
+  if (py < 0 || py >= 18 || px < 0 || px >= 16) return
+  const i = (py * 16 + px) * 3
+  buf[i] = rgb[0]
+  buf[i + 1] = rgb[1]
+  buf[i + 2] = rgb[2]
 }
 
 function hop(buf) {
@@ -462,6 +719,8 @@ function tally(e, result) {
   cur.cache_r += num(u.cache_read_input_tokens)
   cur.cache_w += num(u.cache_creation_input_tokens)
   bag[fam] = cur
+  if (sparkLeft < 12) sparkLeft = 12
+  quiet = 0
   feedFrom(id, bag)
 }
 
