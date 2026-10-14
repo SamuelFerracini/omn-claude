@@ -37,7 +37,7 @@ export function register(on) {
   on('session.start', async ($, e, next) => {
     sessionLive = true
     const savedKey = await $.store.get('sshKey')
-    if (typeof savedKey === 'string' && savedKey !== '') keyPath = savedKey
+    if (typeof savedKey === 'string' && savedKey !== '') keyPath = await preferPrivate($, savedKey)
     const savedPet = await $.store.get('petId')
     if (typeof savedPet === 'string' && savedPet !== '') petId = savedPet
     $.clock.every(100, () => stepFrame($))
@@ -98,7 +98,7 @@ export function register(on) {
       return { text: petId ? 'omn ' + petId : 'usage: /omn <pet id>' }
     }
     if (arg.startsWith('key ') || arg.startsWith('/') || arg.startsWith('~') || arg.startsWith('.')) {
-      keyPath = arg.startsWith('key ') ? arg.slice(4).trim() : arg
+      keyPath = await preferPrivate($, arg.startsWith('key ') ? arg.slice(4).trim() : arg)
       await $.store.set('sshKey', keyPath)
       warned = false
       const id = await petIdFromKey($)
@@ -859,12 +859,20 @@ async function signPayload($, nonce, bodyOf) {
     return null
   }
   // A passphrase key cannot be opened without a tty. Its .pub plus ssh-agent signs instead.
-  const pub = key + '.pub'
-  const hasPub = await $.fs.exists(pub)
-  const signKey = hasPub === true || (hasPub && hasPub.value === true) ? pub : key
-  const pubRun = signKey === pub ? { exitCode: 0, stdout: textOf(await $.fs.read(pub)) } : await $.process.run(['ssh-keygen', '-y', '-f', key])
-  if (pubRun.exitCode !== 0) throw new Error('ssh-keygen -y (passphrase key? add ' + pub + ')')
-  const pubkey = String(pubRun.stdout || '').trim().split(/\s+/).slice(0, 2).join(' ')
+  // A path that already ends in .pub must not grow a second .pub.
+  const pair = keyPair(key)
+  const hasPub = await exists($, pair.pub)
+  const opened = await $.process.run(['ssh-keygen', '-y', '-f', pair.priv])
+  let pubkey = ''
+  let signKey = pair.priv
+  if (opened.exitCode === 0) {
+    pubkey = String(opened.stdout || '').trim().split(/\s+/).slice(0, 2).join(' ')
+  } else if (hasPub) {
+    pubkey = textOf(await $.fs.read(pair.pub)).trim().split(/\s+/).slice(0, 2).join(' ')
+    signKey = pair.pub
+  } else {
+    throw new Error('ssh-keygen -y (passphrase key? add ' + pair.pub + ')')
+  }
   const ts = Math.floor(Date.now() / 1000)
   const body = bodyOf(pubkey, ts)
   const home = await $.env.get('HOME')
@@ -922,6 +930,23 @@ async function petIdFromKey($) {
   const found = String(run.stdout || '').match(/SHA256:([A-Za-z0-9+/]+)/)
   if (!found) return ''
   return found[1].slice(0, 8).replaceAll('+', '-').replaceAll('/', '_')
+}
+
+function keyPair(key) {
+  if (key.endsWith('.pub')) return { priv: key.slice(0, -4), pub: key }
+  return { priv: key, pub: key + '.pub' }
+}
+
+async function exists($, path) {
+  const found = await $.fs.exists(path)
+  return found === true || (found && found.value === true)
+}
+
+async function preferPrivate($, key) {
+  if (!key.endsWith('.pub')) return key
+  const priv = key.slice(0, -4)
+  if (await exists($, priv)) return priv
+  return key
 }
 
 async function resolveKey($) {
