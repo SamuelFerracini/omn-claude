@@ -299,8 +299,6 @@ const cPulse = '#efeaff'
 const cOff = '#2a2640'
 const cText = '#e8e6f0'
 const cFed = '#f2b84b'
-const cHunger = '#6fbf8b'
-const cLow = '#e07070'
 const streakGold = 7
 
 function meterText(Box, Text, growth) {
@@ -310,10 +308,7 @@ function meterText(Box, Text, growth) {
   const pulse = pct > 85 && pct < 100 && tick % 8 < 4
   const on = pipChars.slice(0, lit)
   const off = pipChars.slice(lit).join('')
-  const row = []
-  const name = cleanLabel(portrait && portrait.name, 16)
-  if (name) row.push(Text({ color: cText, children: [name] }))
-  row.push(Text({ color: cDim, children: ['exp'] }))
+  const row = [Text({ color: cDim, children: ['exp'] })]
   if (pulse && on.length) {
     const head = on.slice(0, -1).join('')
     if (head) row.push(Text({ color: cExp, children: [head] }))
@@ -322,8 +317,11 @@ function meterText(Box, Text, growth) {
     row.push(Text({ color: cExp, children: [on.join('')] }))
   }
   if (off) row.push(Text({ color: cOff, children: [off] }))
-  row.push(Text({ color: cText, children: [stageLeft(g)] }))
-  const lines = [Box({ flexDirection: 'row', columnGap: 1, children: row })]
+  row.push(Text({ color: cText, children: [compact(g)] }))
+  const lines = []
+  const name = cleanLabel(portrait && portrait.name, 32)
+  if (name) lines.push(Text({ color: cText, children: [name] }))
+  lines.push(Box({ flexDirection: 'row', columnGap: 1, children: row }))
   const care = careLine(Box, Text)
   if (care) lines.push(care)
   if (note) lines.push(Text({ color: cFed, children: [note] }))
@@ -335,15 +333,6 @@ function careLine(Box, Text) {
   const p = portrait
   if (!p) return null
   const kids = []
-  const hp = hungerPct(p.hunger)
-  if (hp !== null) {
-    const lit = signalLevel(hp)
-    const on = pipChars.slice(0, lit).join('')
-    const off = pipChars.slice(lit).join('')
-    kids.push(Text({ color: cDim, children: ['hunger'] }))
-    if (on) kids.push(Text({ color: hp < 25 ? cLow : cHunger, children: [on] }))
-    if (off) kids.push(Text({ color: cOff, children: [off] }))
-  }
   const mood = cleanLabel(p.mood, 24)
   if (mood) kids.push(Text({ color: cDim, children: [mood] }))
   if (typeof p.streak === 'number' && isFinite(p.streak) && p.streak > 0) {
@@ -351,21 +340,6 @@ function careLine(Box, Text) {
   }
   if (!kids.length) return null
   return Box({ flexDirection: 'row', columnGap: 1, children: kids })
-}
-
-function stageLeft(g) {
-  const stage = stageOf(g)
-  if (stage >= 4) return compact(g)
-  const left = stageAt[stage + 1] - g
-  return compact(left < 0 ? 0 : left) + ' left'
-}
-
-function hungerPct(h) {
-  if (typeof h !== 'number' || !isFinite(h) || h < 0) return null
-  // Below 1 is a fraction of full. 1 and above are a percent.
-  if (h > 0 && h < 1) return h * 100
-  if (h <= 100) return h
-  return null
 }
 
 function cleanLabel(s, max) {
