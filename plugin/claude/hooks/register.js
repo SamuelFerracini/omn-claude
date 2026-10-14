@@ -19,6 +19,8 @@ const pending = new Map()
 const wakeStill = 14
 const wakeStir = 8
 let sessionLive = false
+const sessionId = sessionNonce()
+const leaseMs = 90000
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -31,6 +33,7 @@ export function register(on) {
     $.clock.every(30000, () => {
       if (!sessionLive) return
       postSession($, 'ping')
+      holdSession($, true).catch(() => {})
       refresh($)
     })
     try {
@@ -42,10 +45,10 @@ export function register(on) {
     } else {
       await refresh($)
     }
-    const held = await $.store.get('claudeAwake')
-    if (portrait && portrait.status === 'sleeping' && held !== '1') beginWake()
+    const others = Object.keys(await otherSessions($)).length
+    if (portrait && portrait.status === 'sleeping' && others === 0) beginWake()
     await postSession($, 'open')
-    await $.store.set('claudeAwake', '1')
+    await holdSession($, true)
     if (wakeLeft === 0) await refresh($)
     await $.command.register({
       name: 'omn',
@@ -62,8 +65,8 @@ export function register(on) {
     note = ''
     noteLeft = 0
     try {
-      await postSession($, 'close')
-      await $.store.set('claudeAwake', '')
+      // Other Claude sessions still open keep the pet awake. Only the last one puts it to sleep.
+      if ((await holdSession($, false)) === 0) await postSession($, 'close')
     } catch (err) {}
     return next(e)
   })
@@ -151,6 +154,25 @@ export function register(on) {
     }
     return result
   })
+}
+
+// Each open session keeps a lease in the store, renewed by the 30s ping. A crashed session's lease expires.
+// shortcut: read-modify-write across processes can drop a lease if two sessions write at once; the next ping restores it.
+async function otherSessions($) {
+  let all = {}
+  try {
+    all = JSON.parse((await $.store.get('claudeSessions')) || '{}') || {}
+  } catch (err) {}
+  const live = {}
+  for (const id in all) if (id !== sessionId && Date.now() - all[id] < leaseMs) live[id] = all[id]
+  return live
+}
+
+async function holdSession($, open) {
+  const live = await otherSessions($)
+  if (open) live[sessionId] = Date.now()
+  await $.store.set('claudeSessions', JSON.stringify(live))
+  return Object.keys(live).length
 }
 
 function beginWake() {
