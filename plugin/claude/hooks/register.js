@@ -378,7 +378,21 @@ function feedFrame(raw) {
 function hop(buf) {
   const row = 16 * 3
   const copy = buf.slice()
-  for (let y = 0; y < 17; y++) buf.set(copy.subarray((y + 1) * row, (y + 2) * row), y * row)
+  // Lift only the pet one row. Sky and floor stay put so the square does not bob.
+  // shortcut: sky is the top-left colour, floor starts at the first row whose left pixel is the
+  // bottom-left colour. Revisit if pets get gradient skies or uneven floors.
+  const bg = [copy[0], copy[1], copy[2]]
+  const isBg = (i) => copy[i] === bg[0] && copy[i + 1] === bg[1] && copy[i + 2] === bg[2]
+  const last = 17 * row
+  let floor = isBg(last) ? 18 : 1
+  while (floor < 18 && !(copy[floor * row] === copy[last] && copy[floor * row + 1] === copy[last + 1] && copy[floor * row + 2] === copy[last + 2])) floor++
+  for (let i = 0; i < floor * row; i += 3) buf.set(bg, i)
+  for (let y = 1; y < floor; y++) {
+    for (let x = 0; x < 16; x++) {
+      const i = (y * 16 + x) * 3
+      if (!isBg(i)) buf.set(copy.subarray(i, i + 3), i - row)
+    }
+  }
 }
 
 function tally(e, result) {
