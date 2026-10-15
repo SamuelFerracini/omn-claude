@@ -123,7 +123,8 @@ export function register(on) {
       lastSurface === 'terminal'
         ? Raster({ key: 'pet', columns: 16, rows: 9, cells: rasterOf(frame) })
         : Svg({ children: svgOf(frame) })
-    const lines = [picture, meterText(Box, Text, (wakeFrom || portrait).growth)]
+    const pet = Box({ flexDirection: 'row', columnGap: 2, children: [picture, meterText(Box, Text, (wakeFrom || portrait).growth)] })
+    const lines = [pet]
     if (theirs) lines.push(theirs)
     return Box({ flexDirection: 'column', children: lines })
   })
@@ -434,7 +435,7 @@ function rasterOf(b64) {
 
 function svgOf(b64) {
   const raw = present(b64)
-  const px = 8
+  const px = 5
   let rects = ''
   for (let y = 0; y < 18; y++) {
     for (let x = 0; x < 16; x++) {
