@@ -2,6 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
+const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const families = ['haiku', 'sonnet', 'opus', 'other']
 
@@ -32,6 +33,9 @@ let combo = 0
 const comboWindow = 180000
 const quietAt = 80
 let bits = []
+let updateLine = ''
+let updateChecked = 0
+const updateEvery = 1800000
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -46,7 +50,9 @@ export function register(on) {
       postSession($, 'ping')
       holdSession($, true).catch(() => {})
       refresh($)
+      if (Date.now() - updateChecked >= updateEvery) checkUpdate($).catch(() => {})
     })
+    checkUpdate($).catch(() => {})
     try {
       await $.ui.close({ id: PANE })
     } catch (err) {}
@@ -300,6 +306,7 @@ const cPulse = '#efeaff'
 const cOff = '#2a2640'
 const cText = '#e8e6f0'
 const cFed = '#f2b84b'
+const cWarn = '#ff5a36'
 const streakGold = 7
 
 function meterText(Box, Text, growth) {
@@ -327,7 +334,56 @@ function meterText(Box, Text, growth) {
   if (care) lines.push(care)
   if (note) lines.push(Text({ color: cFed, children: [note] }))
   lines.push(Text({ color: cFed, children: ['ssh omn.sh'] }))
+  if (updateLine) lines.push(Text({ color: cWarn, children: [updateLine] }))
   return Box({ flexDirection: 'column', children: lines })
+}
+
+// This marketplace does not auto-update. Compare the installed manifest with GitHub main.
+async function checkUpdate($) {
+  updateChecked = Date.now()
+  try {
+    const root = pluginRoot($)
+    if (!root) return
+    const local = versionOf(textOf(await $.fs.read(root + '/.claude-plugin/plugin.json')))
+    if (!local) return
+    const res = await $.http.fetch(VERSION_URL)
+    if (!res.ok) return
+    const remote = versionOf(res.text)
+    const next = remote && versionNewer(remote, local) ? 'update to ' + remote : ''
+    if (next === updateLine) return
+    updateLine = next
+    $.ui.invalidate('ui.render')
+  } catch (err) {}
+}
+
+function pluginRoot($) {
+  const plugin = $.plugin
+  if (!plugin || !plugin.root) return ''
+  const root = typeof plugin.root === 'function' ? plugin.root() : plugin.root
+  return typeof root === 'string' ? root : ''
+}
+
+function versionOf(raw) {
+  let data
+  try {
+    data = JSON.parse(typeof raw === 'string' ? raw : '')
+  } catch (err) {
+    return ''
+  }
+  const v = data && data.version
+  return typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v) ? v : ''
+}
+
+function versionNewer(remote, local) {
+  const a = remote.split('.')
+  const b = local.split('.')
+  for (let i = 0; i < 3; i++) {
+    const x = parseInt(a[i], 10)
+    const y = parseInt(b[i], 10)
+    if (x > y) return true
+    if (x < y) return false
+  }
+  return false
 }
 
 function careLine(Box, Text) {
