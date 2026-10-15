@@ -342,7 +342,7 @@ function meterText(Box, Text, growth) {
 async function checkUpdate($) {
   updateChecked = Date.now()
   try {
-    const root = pluginRoot($)
+    const root = $.plugin.root
     if (!root) return
     const local = versionOf(textOf(await $.fs.read(root + '/.claude-plugin/plugin.json')))
     if (!local) return
@@ -354,13 +354,6 @@ async function checkUpdate($) {
     updateLine = next
     $.ui.invalidate('ui.render')
   } catch (err) {}
-}
-
-function pluginRoot($) {
-  const plugin = $.plugin
-  if (!plugin || !plugin.root) return ''
-  const root = typeof plugin.root === 'function' ? plugin.root() : plugin.root
-  return typeof root === 'string' ? root : ''
 }
 
 function versionOf(raw) {
