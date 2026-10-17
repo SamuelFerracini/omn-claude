@@ -84,8 +84,8 @@ export function register(on) {
     note = ''
     noteLeft = 0
     bits = []
-    crumbs = []
-    chomp = 0
+    bites = []
+    bite = null
     idleHop = 0
     sparkLeft = 0
     quiet = 0
@@ -147,7 +147,7 @@ export function register(on) {
     const bag = pending.get(id) || pending.get('')
     pending.delete(id)
     pending.delete('')
-    // Crumbs during the turn come from each request. The save uses the turn
+    // Bites during the turn come from each request. The save uses the turn
     // total when Claude sends one, so the meal in the database is the tokens
     // the pet was fed, not a second copy of the same steps.
     const turnUsage = e.usage || (result && result.usage)
@@ -155,10 +155,7 @@ export function register(on) {
     const turnDeltas = deltasOf(null, turnUsage, turnModel)
     const deltas = clampDeltas(xpOf(turnDeltas) > 0 ? turnDeltas : deltasOf(bag))
     const fam = mealFamily(deltas)
-    if (fedMark === 0 && xpOf(deltas) > 0) {
-      const n = Math.min(4, xpOf(deltas))
-      for (let i = 0; i < n; i++) queueCrumb(fam)
-    }
+    if (fedMark === 0 && xpOf(deltas) > 0) queueBite(xpOf(deltas), fam)
     fedTurn = ''
     fedMark = 0
     if (xpOf(deltas) <= 0) return result
@@ -262,7 +259,7 @@ function stepFrame($) {
 }
 
 function busy() {
-  return wakeLeft > 0 || evolveLeft > 0 || sparkLeft > 0 || chomp > 0 || crumbs.length > 0 || bits.length > 0 || idleHop > 0
+  return wakeLeft > 0 || evolveLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0
 }
 
 async function finishWake($) {
@@ -520,13 +517,11 @@ function bytesB64(u8) {
   return btoa(s)
 }
 
-let crumbs = []
-let chomp = 0
-let spawned = 0
+let bites = []
+let bite = null
 let fedMark = 0
 let fedTurn = ''
-const spawnX = [7, 8, 6, 9, 7, 8]
-const mouthY = 12
+const biteModes = ['catch', 'wait', 'floor']
 
 const crumbRgb = {
   haiku: [0x7e, 0xc8, 0xe3],
@@ -555,10 +550,7 @@ function feedFrom(id, bag) {
   const deltas = deltasOf(bag)
   const xp = xpOf(deltas)
   if (xp <= fedMark) return
-  let n = xp - fedMark
-  if (n > 4) n = 4
-  const fam = mealFamily(deltas)
-  for (let i = 0; i < n; i++) queueCrumb(fam)
+  queueBite(xp - fedMark, mealFamily(deltas))
   fedMark = xp
 }
 
@@ -578,25 +570,31 @@ function mealFamily(deltas) {
   return best
 }
 
-function queueCrumb(kind) {
+function queueBite(xp, kind) {
+  if (xp <= 0 || bites.length >= 3) return
   const k = kind === 'opus' || kind === 'haiku' || kind === 'sonnet' ? kind : 'other'
-  chomp = k === 'opus' ? 8 : 4
-  if (crumbs.length >= 6) return
-  crumbs.push({ x: spawnX[spawned % spawnX.length], y: -crumbs.length * 2, kind: k })
-  spawned++
+  bites.push({ mode: biteModes[(Math.random() * biteModes.length) | 0], tick: 0, xp: xp, kind: k })
   quiet = 0
 }
 
 function stepFeed() {
-  if (chomp > 0) chomp--
-  if (!crumbs.length) return
-  const live = []
-  for (const c of crumbs) {
-    c.y += 0.5
-    if (c.y < mouthY) live.push(c)
-    else chomp = c.kind === 'opus' ? 8 : 4
+  if (!bite) {
+    bite = bites.shift() || null
+    if (!bite) return
+  } else {
+    bite.tick++
+    if (bite.tick >= biteSpan(bite.mode)) {
+      bite = null
+      return
+    }
   }
-  crumbs = live
+  quiet = 0
+}
+
+function biteSpan(mode) {
+  if (mode === 'wait') return 12 + 8 + 20
+  if (mode === 'catch') return 5 + 6 + 3 + 20
+  return 14 + 6 + 8 + 18
 }
 
 function burst() {
@@ -627,9 +625,16 @@ function stepBits() {
 }
 
 function present(b64) {
-  const buf = new Uint8Array(decodeB64(b64))
+  const idle = decodeB64(b64)
+  const m = measure(idle)
+  const pose = bite ? bitePose(bite, m) : null
+  const hasChomp = !!(pose && pose.open && portrait && portrait.chomp)
+  const buf = new Uint8Array(hasChomp ? decodeB64(portrait.chomp) : idle)
+  if (pose && pose.lift) liftPet(buf, pose.lift)
+  if (pose && pose.lift > 0) shadeFoot(buf, idle, m)
+  if (pose && pose.open && !hasChomp) dropMouth(buf, m, pose.lift)
+  if (pose && pose.token != null) paintToken(buf, m.tx, pose.token, crumbRgb[bite.kind] || crumbRgb.other)
   if (liftNow()) hop(buf)
-  paintCrumbs(buf)
   paintBits(buf)
   paintSpark(buf)
   paintSleep(buf)
@@ -639,16 +644,168 @@ function present(b64) {
 
 function liftNow() {
   if (tick % 2 !== 0) return false
-  return stirring() || idleHop > 0 || chomp > 0
+  return stirring() || idleHop > 0
 }
 
-function paintCrumbs(buf) {
-  for (const c of crumbs) {
-    const rgb = crumbRgb[c.kind] || crumbRgb.other
-    const y = Math.floor(c.y)
-    paint(buf, c.x, y, rgb)
-    if (c.kind === 'opus') paint(buf, c.x, y + 1, rgb)
+function bitePose(b, m) {
+  const mouth = m.mouth
+  const sky = m.sky
+  const ground = m.ground
+  const t = b.tick
+  if (b.mode === 'wait') {
+    const fall = 12
+    const chew = 8
+    if (t < fall) return { lift: 0, open: false, token: sky + Math.round(((mouth - 1 - sky) * t) / Math.max(1, fall - 1)) }
+    if (t < fall + chew) return { lift: 0, open: true, token: mouth - 1 }
+    return { lift: 0, open: false, token: null }
   }
+  if (b.mode === 'catch') {
+    const rise = [0, 1, 2, 3, 3]
+    const hang = 6
+    const land = [2, 1, 0]
+    if (t < rise.length) {
+      const lift = rise[t]
+      return { lift: lift, open: lift >= 3, token: mouth - 1 - lift }
+    }
+    if (t < rise.length + hang) return { lift: 3, open: true, token: null }
+    const landAt = rise.length + hang
+    if (t < landAt + land.length) return { lift: land[t - landAt], open: false, token: null }
+    return { lift: 0, open: false, token: null }
+  }
+  const fall = 14
+  const sit = 6
+  const chew = 8
+  if (t < fall) return { lift: 0, open: false, token: sky + Math.round(((ground - sky) * t) / Math.max(1, fall - 1)) }
+  if (t < fall + sit) return { lift: 0, open: false, token: ground }
+  if (t < fall + sit + chew) {
+    const u = (t - fall - sit) / chew
+    return { lift: -1, open: true, token: Math.round(ground + (mouth + 1 - ground) * u) }
+  }
+  return { lift: 0, open: false, token: null }
+}
+
+function bgOf(raw) {
+  return [raw[0], raw[1], raw[2]]
+}
+
+function samePx(raw, i, c) {
+  return raw[i] === c[0] && raw[i + 1] === c[1] && raw[i + 2] === c[2]
+}
+
+function floorAt(raw) {
+  const row = 16 * 3
+  const last = 17 * row
+  const floorC = [raw[last], raw[last + 1], raw[last + 2]]
+  const bg = bgOf(raw)
+  if (floorC[0] === bg[0] && floorC[1] === bg[1] && floorC[2] === bg[2]) return 18
+  let floor = 1
+  while (floor < 18 && !(raw[floor * row] === floorC[0] && raw[floor * row + 1] === floorC[1] && raw[floor * row + 2] === floorC[2])) floor++
+  return floor
+}
+
+function measure(raw) {
+  const bg = bgOf(raw)
+  const floor = floorAt(raw)
+  let top = floor
+  let foot = 0
+  let minX = 16
+  let maxX = 0
+  for (let y = 0; y < floor; y++) {
+    for (let x = 0; x < 16; x++) {
+      const i = (y * 16 + x) * 3
+      if (samePx(raw, i, bg)) continue
+      if (y < top) top = y
+      if (y > foot) foot = y
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+    }
+  }
+  if (top >= floor) {
+    top = 4
+    foot = Math.max(4, floor - 2)
+    minX = 4
+    maxX = 11
+  }
+  let mouth = top + Math.round((foot - top) * 0.62)
+  if (portrait && portrait.chomp) {
+    const alt = decodeB64(portrait.chomp)
+    let diff = -1
+    for (let y = top; y < floor && y < 18; y++) {
+      for (let x = 0; x < 16; x++) {
+        const i = (y * 16 + x) * 3
+        if (rgb(raw, i) !== rgb(alt, i)) diff = y
+      }
+    }
+    if (diff > top) mouth = diff - 1
+  }
+  return {
+    bg: bg,
+    floor: floor,
+    top: top,
+    foot: foot,
+    mouth: mouth,
+    minX: minX,
+    maxX: maxX,
+    tx: Math.max(0, Math.min(14, (minX + maxX) >> 1)),
+    sky: Math.max(0, top - 3),
+    ground: Math.min(17, foot + 1 < floor ? foot + 1 : floor),
+  }
+}
+
+function liftPet(buf, lift) {
+  const copy = buf.slice()
+  const bg = bgOf(copy)
+  const floor = floorAt(copy)
+  for (let y = 0; y < floor; y++) {
+    for (let x = 0; x < 16; x++) {
+      const i = (y * 16 + x) * 3
+      buf[i] = bg[0]
+      buf[i + 1] = bg[1]
+      buf[i + 2] = bg[2]
+    }
+  }
+  for (let y = 0; y < floor; y++) {
+    const src = y + lift
+    if (src < 0 || src >= floor) continue
+    for (let x = 0; x < 16; x++) {
+      const si = (src * 16 + x) * 3
+      if (samePx(copy, si, bg)) continue
+      const di = (y * 16 + x) * 3
+      buf[di] = copy[si]
+      buf[di + 1] = copy[si + 1]
+      buf[di + 2] = copy[si + 2]
+    }
+  }
+}
+
+function shadeFoot(buf, idle, m) {
+  for (let x = m.minX; x <= m.maxX; x++) {
+    const i = (m.foot * 16 + x) * 3
+    if (samePx(idle, i, m.bg)) continue
+    buf[i] = Math.max(0, m.bg[0] - 12)
+    buf[i + 1] = Math.max(0, m.bg[1] - 12)
+    buf[i + 2] = Math.max(0, m.bg[2] - 8)
+  }
+}
+
+function dropMouth(buf, m, lift) {
+  const y = m.mouth + 1 - lift
+  const src = m.mouth - lift
+  if (y < 0 || src < 0 || y >= 18 || src >= 18) return
+  for (let x = m.tx; x <= m.tx + 1; x++) {
+    const di = (y * 16 + x) * 3
+    const si = (src * 16 + x) * 3
+    buf[di] = buf[si]
+    buf[di + 1] = buf[si + 1]
+    buf[di + 2] = buf[si + 2]
+  }
+}
+
+function paintToken(buf, x, y, rgb) {
+  paint(buf, x, y, rgb)
+  paint(buf, x + 1, y, rgb)
+  paint(buf, x, y + 1, rgb)
+  paint(buf, x + 1, y + 1, rgb)
 }
 
 function paintBits(buf) {
