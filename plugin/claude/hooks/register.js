@@ -304,7 +304,6 @@ const cOff = '#2a2640'
 const cText = '#e8e6f0'
 const cFed = '#f2b84b'
 const cWarn = '#ff5a36'
-const streakGold = 7
 
 function meterText(Box, Text, growth) {
   const g = typeof growth === 'number' && isFinite(growth) ? Math.max(0, Math.round(growth)) : 0
@@ -411,21 +410,6 @@ function applyCare(dst, src) {
   for (const k of ['name', 'hunger', 'mood', 'streak', 'gleam', 'status']) {
     if (src[k] !== undefined && src[k] !== null) dst[k] = src[k]
   }
-}
-
-function goldEdge() {
-  const p = portrait
-  if (!p) return false
-  if (stageOf(p.growth) >= 4) return true
-  if (gleaming(p)) return true
-  return typeof p.streak === 'number' && p.streak >= streakGold
-}
-
-function gleaming(p) {
-  const g = p && p.gleam
-  if (g === true || g === 1) return true
-  if (typeof g === 'string' && g !== '' && g !== '0' && g !== 'false') return true
-  return false
 }
 
 function stageOf(g) {
@@ -638,7 +622,6 @@ function present(b64) {
   paintBits(buf)
   paintSpark(buf)
   paintSleep(buf)
-  if (goldEdge()) paintEdge(buf)
   return buf
 }
 
@@ -839,18 +822,6 @@ function zed(buf, x, y, c) {
   paint(buf, x, y + 2, c)
   paint(buf, x + 1, y + 2, c)
   paint(buf, x + 2, y + 2, c)
-}
-
-function paintEdge(buf) {
-  const g = [0xf2, 0xb8, 0x4b]
-  for (let x = 0; x < 16; x++) {
-    paint(buf, x, 0, g)
-    paint(buf, x, 17, g)
-  }
-  for (let y = 0; y < 18; y++) {
-    paint(buf, 0, y, g)
-    paint(buf, 15, y, g)
-  }
 }
 
 function paint(buf, x, y, rgb) {
