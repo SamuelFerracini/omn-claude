@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.10'
+const VERSION = '0.4.11'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const families = ['haiku', 'sonnet', 'opus', 'other']
@@ -687,70 +687,20 @@ function floorAt(raw) {
   return floor
 }
 
+// Stars, rain, mist, embers, and smoke are scene effects. Every other
+// pixel above the floor is the pet, including a crown or spark that
+// does not touch the body.
+const stayPut = new Set([
+  0x4a4580, 0x7a6870, 0x885050, 0x4a6aa0, 0x343e56, 0xe07024, 0x843a22, 0x9a96a8,
+])
+
 function bodyMask(raw, floor, bg) {
-  const n = floor * 16
-  const on = new Uint8Array(n)
+  const mask = new Uint8Array(floor * 16)
   for (let y = 0; y < floor; y++) {
     for (let x = 0; x < 16; x++) {
-      if (!samePx(raw, (y * 16 + x) * 3, bg)) on[y * 16 + x] = 1
-    }
-  }
-  const seen = new Uint8Array(n)
-  const comps = []
-  let best = []
-  for (let i = 0; i < n; i++) {
-    if (!on[i] || seen[i]) continue
-    const comp = []
-    const stack = [i]
-    seen[i] = 1
-    while (stack.length) {
-      const cur = stack.pop()
-      comp.push(cur)
-      const x = cur % 16
-      const y = (cur / 16) | 0
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if (!dx && !dy) continue
-          const nx = x + dx
-          const ny = y + dy
-          if (nx < 0 || ny < 0 || nx >= 16 || ny >= floor) continue
-          const ni = ny * 16 + nx
-          if (on[ni] && !seen[ni]) {
-            seen[ni] = 1
-            stack.push(ni)
-          }
-        }
-      }
-    }
-    comps.push(comp)
-    if (comp.length > best.length) best = comp
-  }
-  const mask = new Uint8Array(n)
-  for (const i of best) mask[i] = 1
-  // A crown can sit a pixel off the head. Pull in any piece that close.
-  // Sky sparkles are farther, so they stay put.
-  let grew = true
-  while (grew) {
-    grew = false
-    for (const comp of comps) {
-      if (mask[comp[0]]) continue
-      let close = false
-      for (const i of comp) {
-        const x = i % 16
-        const y = (i / 16) | 0
-        for (let dy = -2; dy <= 2 && !close; dy++) {
-          for (let dx = -2; dx <= 2; dx++) {
-            const nx = x + dx
-            const ny = y + dy
-            if (nx < 0 || ny < 0 || nx >= 16 || ny >= floor) continue
-            if (mask[ny * 16 + nx]) close = true
-          }
-        }
-        if (close) break
-      }
-      if (!close) continue
-      for (const i of comp) mask[i] = 1
-      grew = true
+      const i = (y * 16 + x) * 3
+      if (samePx(raw, i, bg) || stayPut.has(rgb(raw, i))) continue
+      mask[y * 16 + x] = 1
     }
   }
   return mask
