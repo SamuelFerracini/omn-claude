@@ -2,6 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
+const VERSION = '0.4.9'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const families = ['haiku', 'sonnet', 'opus', 'other']
@@ -182,6 +183,7 @@ export function register(on) {
         $.ui.toast('omn +' + parsed.xp + ' xp')
         noteMeal(fam, parsed.xp)
       }
+      await checkUpdate($, true)
       if (parsed.id && !petId) await rememberPet($, parsed.id)
     } catch (err) {
       $.ui.log('omn xp skipped: ' + (err && err.message ? err.message : 'sign'))
@@ -334,18 +336,16 @@ function meterText(Box, Text, growth) {
   return Box({ flexDirection: 'column', children: lines })
 }
 
-// This marketplace does not auto-update. Compare the installed manifest with GitHub main.
-async function checkUpdate($) {
+// This marketplace does not auto-update. VERSION is the copy that is running.
+// The file on disk can already be newer, so reading it hid the notice.
+async function checkUpdate($, force) {
+  if (!force && Date.now() - updateChecked < updateEvery) return
   updateChecked = Date.now()
   try {
-    const root = $.plugin.root
-    if (!root) return
-    const local = versionOf(textOf(await $.fs.read(root + '/.claude-plugin/plugin.json')))
-    if (!local) return
     const res = await $.http.fetch(VERSION_URL)
     if (!res.ok) return
-    const remote = versionOf(res.text)
-    const next = remote && versionNewer(remote, local) ? 'update to ' + remote : ''
+    const remote = versionOf(textOf(res))
+    const next = remote && versionNewer(remote, VERSION) ? 'update to ' + remote : ''
     if (next === updateLine) return
     updateLine = next
     $.ui.invalidate('ui.render')
