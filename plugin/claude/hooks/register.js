@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.12'
+const VERSION = '0.4.13'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const families = ['haiku', 'sonnet', 'opus', 'other']
@@ -625,6 +625,9 @@ function present(b64) {
   // Server idle frames rise by one pixel. That parks a crown on the seam
   // between two cells. Raise one more so the hop is a whole cell.
   if (raised) liftPet(buf, 1)
+  // A dark outline quantizes to the sky on some terminals, so the crown
+  // looks detached. Push pet pixels far enough from the sky to survive.
+  separateInk(buf)
   paintBits(buf)
   paintSpark(buf)
   paintSleep(buf)
@@ -688,9 +691,44 @@ function floorAt(raw) {
   const floorC = [raw[last], raw[last + 1], raw[last + 2]]
   const bg = bgOf(raw)
   if (floorC[0] === bg[0] && floorC[1] === bg[1] && floorC[2] === bg[2]) return 18
-  let floor = 1
-  while (floor < 18 && !(raw[floor * row] === floorC[0] && raw[floor * row + 1] === floorC[1] && raw[floor * row + 2] === floorC[2])) floor++
-  return floor
+  // Walk up from the ground. A pet pixel that happens to match the ground
+  // color must not be treated as the floor, or the body splits.
+  let floor = 17
+  while (floor > 0 && raw[floor * row] === floorC[0] && raw[floor * row + 1] === floorC[1] && raw[floor * row + 2] === floorC[2]) floor--
+  return floor + 1
+}
+
+function separateInk(buf) {
+  const bg = bgOf(buf)
+  const floor = floorAt(buf)
+  const mask = bodyMask(buf, floor, bg)
+  const need = 96
+  for (let id = 0; id < mask.length; id++) {
+    if (!mask[id]) continue
+    const o = id * 3
+    const dr = buf[o] - bg[0]
+    const dg = buf[o + 1] - bg[1]
+    const db = buf[o + 2] - bg[2]
+    const dist = Math.abs(dr) + Math.abs(dg) + Math.abs(db)
+    if (dist >= need) continue
+    if (dist === 0) {
+      buf[o] = Math.min(255, bg[0] + 36)
+      buf[o + 1] = Math.min(255, bg[1] + 36)
+      buf[o + 2] = Math.min(255, bg[2] + 48)
+      continue
+    }
+    const scale = need / dist
+    buf[o] = clampByte(bg[0] + dr * scale)
+    buf[o + 1] = clampByte(bg[1] + dg * scale)
+    buf[o + 2] = clampByte(bg[2] + db * scale)
+  }
+}
+
+function clampByte(n) {
+  n = n | 0
+  if (n < 0) return 0
+  if (n > 255) return 255
+  return n
 }
 
 // Stars, rain, mist, embers, and smoke are scene effects. Every other
