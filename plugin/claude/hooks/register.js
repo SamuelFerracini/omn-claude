@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.11'
+const VERSION = '0.4.12'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const families = ['haiku', 'sonnet', 'opus', 'other']
@@ -294,6 +294,7 @@ async function refresh($, growth) {
     burst()
   }
   portrait = data
+  restTop = -1
   $.ui.invalidate('ui.render')
 }
 
@@ -611,14 +612,19 @@ function stepBits() {
 function present(b64) {
   const idle = decodeB64(b64)
   const m = measure(idle)
+  const shown = portrait && portrait.chomp && bite && bitePose(bite, m).open ? decodeB64(portrait.chomp) : idle
+  const raised = noteRaised(shown)
   const pose = bite ? bitePose(bite, m) : null
   const hasChomp = !!(pose && pose.open && portrait && portrait.chomp)
-  const buf = new Uint8Array(hasChomp ? decodeB64(portrait.chomp) : idle)
+  const buf = new Uint8Array(shown)
   if (pose && pose.lift) liftPet(buf, pose.lift)
   if (pose && pose.lift > 0) shadeFoot(buf, idle, m)
   if (pose && pose.open && !hasChomp) dropMouth(buf, m, pose.lift)
   if (pose && pose.token != null) paintToken(buf, m.tx, pose.token, crumbRgb[bite.kind] || crumbRgb.other)
   if (liftNow()) hop(buf)
+  // Server idle frames rise by one pixel. That parks a crown on the seam
+  // between two cells. Raise one more so the hop is a whole cell.
+  if (raised) liftPet(buf, 1)
   paintBits(buf)
   paintSpark(buf)
   paintSleep(buf)
@@ -861,6 +867,31 @@ function paint(buf, x, y, rgb) {
 function hop(buf) {
   // Two rows, one terminal cell. A one-row hop splits the half-blocks.
   liftPet(buf, 2)
+}
+
+// restTop is the pet's lowest crown row. A frame one pixel above that is
+// the server bob. Anything farther is a different pose, so the anchor resets.
+let restTop = -1
+
+function noteRaised(buf) {
+  const top = petTop(buf)
+  if (top < 0) return false
+  if (restTop < 0 || top > restTop) restTop = top
+  if (restTop - top > 2) {
+    restTop = top
+    return false
+  }
+  return (restTop - top) % 2 === 1
+}
+
+function petTop(buf) {
+  const bg = bgOf(buf)
+  const floor = floorAt(buf)
+  const mask = bodyMask(buf, floor, bg)
+  for (let y = 0; y < floor; y++) {
+    for (let x = 0; x < 16; x++) if (mask[y * 16 + x]) return y
+  }
+  return -1
 }
 
 function tally(e, result) {
