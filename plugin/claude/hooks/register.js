@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.14'
+const VERSION = '0.4.15'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const families = ['haiku', 'sonnet', 'opus', 'other']
@@ -294,7 +294,6 @@ async function refresh($, growth) {
     burst()
   }
   portrait = data
-  restTop = -1
   $.ui.invalidate('ui.render')
 }
 
@@ -452,31 +451,16 @@ function unit(n, div, suffix) {
 
 function rasterOf(b64) {
   const raw = present(b64)
-  const bg = bgOf(raw)
   const cols = 16
   const nums = []
   for (let y = 0; y < 9; y++) {
     for (let x = 0; x < cols; x++) {
       const top = ((2 * y) * cols + x) * 3
       const bot = ((2 * y + 1) * cols + x) * 3
-      // One color for the whole cell. A split fg/bg draws a hole on
-      // terminals that do not paint the lower half.
-      const c = pickPix(raw, top, bot, bg)
-      nums.push(0x2580, c, c)
+      nums.push(0x2580, rgb(raw, top), rgb(raw, bot))
     }
   }
   return bytesB64(new Uint8Array(Uint32Array.from(nums).buffer))
-}
-
-function pickPx(raw, i, bg) {
-  return Math.abs(raw[i] - bg[0]) + Math.abs(raw[i + 1] - bg[1]) + Math.abs(raw[i + 2] - bg[2])
-}
-
-function pickPix(raw, top, bot, bg) {
-  const dt = pickPx(raw, top, bg)
-  const db = pickPx(raw, bot, bg)
-  const i = db > dt ? bot : top
-  return rgb(raw, i)
 }
 
 function svgOf(b64) {
@@ -628,7 +612,6 @@ function present(b64) {
   const idle = decodeB64(b64)
   const m = measure(idle)
   const shown = portrait && portrait.chomp && bite && bitePose(bite, m).open ? decodeB64(portrait.chomp) : idle
-  const raised = noteRaised(shown)
   const pose = bite ? bitePose(bite, m) : null
   const hasChomp = !!(pose && pose.open && portrait && portrait.chomp)
   const buf = new Uint8Array(shown)
@@ -637,12 +620,9 @@ function present(b64) {
   if (pose && pose.open && !hasChomp) dropMouth(buf, m, pose.lift)
   if (pose && pose.token != null) paintToken(buf, m.tx, pose.token, crumbRgb[bite.kind] || crumbRgb.other)
   if (liftNow()) hop(buf)
-  // Server idle frames rise by one pixel. That parks a crown on the seam
-  // between two cells. Raise one more so the hop is a whole cell.
-  if (raised) liftPet(buf, 1)
-  // A dark outline quantizes to the sky on some terminals, so the crown
-  // looks detached. Push pet pixels far enough from the sky to survive.
-  separateInk(buf)
+  // A one-pixel rise puts the crown on the seam between two cells.
+  // Nudge so the hard color change sits inside one cell. Both rows stay.
+  if (seamSplit(buf)) liftPet(buf, petTop(buf) > 0 ? 1 : -1)
   paintBits(buf)
   paintSpark(buf)
   paintSleep(buf)
@@ -713,37 +693,29 @@ function floorAt(raw) {
   return floor + 1
 }
 
-function separateInk(buf) {
+// True when the sharp color changes sit on the boundary between two cells.
+function seamSplit(buf) {
   const bg = bgOf(buf)
   const floor = floorAt(buf)
   const mask = bodyMask(buf, floor, bg)
-  const need = 96
-  for (let id = 0; id < mask.length; id++) {
-    if (!mask[id]) continue
-    const o = id * 3
-    const dr = buf[o] - bg[0]
-    const dg = buf[o + 1] - bg[1]
-    const db = buf[o + 2] - bg[2]
-    const dist = Math.abs(dr) + Math.abs(dg) + Math.abs(db)
-    if (dist >= need) continue
-    if (dist === 0) {
-      buf[o] = Math.min(255, bg[0] + 36)
-      buf[o + 1] = Math.min(255, bg[1] + 36)
-      buf[o + 2] = Math.min(255, bg[2] + 48)
-      continue
+  let split = 0
+  let joined = 0
+  for (let y = 0; y < floor - 1; y++) {
+    for (let x = 0; x < 16; x++) {
+      if (!mask[y * 16 + x]) continue
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx
+        if (nx < 0 || nx >= 16 || !mask[(y + 1) * 16 + nx]) continue
+        const a = (y * 16 + x) * 3
+        const b = ((y + 1) * 16 + nx) * 3
+        const d = Math.abs(buf[a] - buf[b]) + Math.abs(buf[a + 1] - buf[b + 1]) + Math.abs(buf[a + 2] - buf[b + 2])
+        if (d < 140) continue
+        if (y % 2 === 1) split += d
+        else joined += d
+      }
     }
-    const scale = need / dist
-    buf[o] = clampByte(bg[0] + dr * scale)
-    buf[o + 1] = clampByte(bg[1] + dg * scale)
-    buf[o + 2] = clampByte(bg[2] + db * scale)
   }
-}
-
-function clampByte(n) {
-  n = n | 0
-  if (n < 0) return 0
-  if (n > 255) return 255
-  return n
+  return split > joined
 }
 
 // Stars, rain, mist, embers, and smoke are scene effects. Every other
@@ -920,21 +892,6 @@ function paint(buf, x, y, rgb) {
 function hop(buf) {
   // Two rows, one terminal cell. A one-row hop splits the half-blocks.
   liftPet(buf, 2)
-}
-
-// restTop is the pet's lowest crown row. A frame one pixel above that is
-// the server bob. Anything farther is a different pose, so the anchor resets.
-let restTop = -1
-
-function noteRaised(buf) {
-  const top = petTop(buf)
-  if (top < 0) return false
-  if (restTop < 0 || top > restTop) restTop = top
-  if (restTop - top > 2) {
-    restTop = top
-    return false
-  }
-  return (restTop - top) % 2 === 1
 }
 
 function petTop(buf) {
