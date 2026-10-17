@@ -233,7 +233,7 @@ function stepFrame($) {
   tick++
   stepFeed()
   stepBits()
-  if (sparkLeft > 0) sparkLeft--
+  if (sparkLeft > 0 && !bite) sparkLeft--
   if (idleHop > 0) idleHop--
   if (wakeLeft > 0) {
     wakeLeft--
@@ -686,17 +686,61 @@ function floorAt(raw) {
   return floor
 }
 
+function bodyMask(raw, floor, bg) {
+  const n = floor * 16
+  const on = new Uint8Array(n)
+  for (let y = 0; y < floor; y++) {
+    for (let x = 0; x < 16; x++) {
+      if (!samePx(raw, (y * 16 + x) * 3, bg)) on[y * 16 + x] = 1
+    }
+  }
+  const seen = new Uint8Array(n)
+  let best = []
+  for (let i = 0; i < n; i++) {
+    if (!on[i] || seen[i]) continue
+    const comp = []
+    const stack = [i]
+    seen[i] = 1
+    while (stack.length) {
+      const cur = stack.pop()
+      comp.push(cur)
+      const x = cur % 16
+      const y = (cur / 16) | 0
+      if (x > 0 && on[cur - 1] && !seen[cur - 1]) {
+        seen[cur - 1] = 1
+        stack.push(cur - 1)
+      }
+      if (x < 15 && on[cur + 1] && !seen[cur + 1]) {
+        seen[cur + 1] = 1
+        stack.push(cur + 1)
+      }
+      if (y > 0 && on[cur - 16] && !seen[cur - 16]) {
+        seen[cur - 16] = 1
+        stack.push(cur - 16)
+      }
+      if (y + 1 < floor && on[cur + 16] && !seen[cur + 16]) {
+        seen[cur + 16] = 1
+        stack.push(cur + 16)
+      }
+    }
+    if (comp.length > best.length) best = comp
+  }
+  const mask = new Uint8Array(n)
+  for (const i of best) mask[i] = 1
+  return mask
+}
+
 function measure(raw) {
   const bg = bgOf(raw)
   const floor = floorAt(raw)
+  const mask = bodyMask(raw, floor, bg)
   let top = floor
   let foot = 0
   let minX = 16
   let maxX = 0
   for (let y = 0; y < floor; y++) {
     for (let x = 0; x < 16; x++) {
-      const i = (y * 16 + x) * 3
-      if (samePx(raw, i, bg)) continue
+      if (!mask[y * 16 + x]) continue
       if (y < top) top = y
       if (y > foot) foot = y
       if (x < minX) minX = x
@@ -739,9 +783,12 @@ function liftPet(buf, lift) {
   const copy = buf.slice()
   const bg = bgOf(copy)
   const floor = floorAt(copy)
+  const mask = bodyMask(copy, floor, bg)
   for (let y = 0; y < floor; y++) {
     for (let x = 0; x < 16; x++) {
-      const i = (y * 16 + x) * 3
+      const id = y * 16 + x
+      if (!mask[id]) continue
+      const i = id * 3
       buf[i] = bg[0]
       buf[i + 1] = bg[1]
       buf[i + 2] = bg[2]
@@ -751,8 +798,9 @@ function liftPet(buf, lift) {
     const src = y + lift
     if (src < 0 || src >= floor) continue
     for (let x = 0; x < 16; x++) {
-      const si = (src * 16 + x) * 3
-      if (samePx(copy, si, bg)) continue
+      const sid = src * 16 + x
+      if (!mask[sid]) continue
+      const si = sid * 3
       const di = (y * 16 + x) * 3
       buf[di] = copy[si]
       buf[di + 1] = copy[si + 1]
@@ -796,8 +844,8 @@ function paintBits(buf) {
 }
 
 function paintSpark(buf) {
-  if (sparkLeft <= 0 || sparkLeft % 2 === 0) return
-  const p = sparkPx[Math.floor(sparkLeft / 2) % sparkPx.length]
+  if (tick % 2 === 0) return
+  const p = sparkPx[Math.floor(tick / 2) % sparkPx.length]
   paint(buf, p[0], p[1], [0xe8, 0xe6, 0xf0])
 }
 
@@ -835,23 +883,8 @@ function paint(buf, x, y, rgb) {
 }
 
 function hop(buf) {
-  const row = 16 * 3
-  const copy = buf.slice()
-  // Lift only the pet one row. Sky and floor stay put so the square does not bob.
-  // shortcut: sky is the top-left colour, floor starts at the first row whose left pixel is the
-  // bottom-left colour. Revisit if pets get gradient skies or uneven floors.
-  const bg = [copy[0], copy[1], copy[2]]
-  const isBg = (i) => copy[i] === bg[0] && copy[i + 1] === bg[1] && copy[i + 2] === bg[2]
-  const last = 17 * row
-  let floor = isBg(last) ? 18 : 1
-  while (floor < 18 && !(copy[floor * row] === copy[last] && copy[floor * row + 1] === copy[last + 1] && copy[floor * row + 2] === copy[last + 2])) floor++
-  for (let i = 0; i < floor * row; i += 3) buf.set(bg, i)
-  for (let y = 1; y < floor; y++) {
-    for (let x = 0; x < 16; x++) {
-      const i = (y * 16 + x) * 3
-      if (!isBg(i)) buf.set(copy.subarray(i, i + 3), i - row)
-    }
-  }
+  // One row. Sparkles stay put; only the pet body moves.
+  liftPet(buf, 1)
 }
 
 function tally(e, result) {
