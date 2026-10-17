@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.9'
+const VERSION = '0.4.10'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const families = ['haiku', 'sonnet', 'opus', 'other']
@@ -577,7 +577,7 @@ function stepFeed() {
 
 function biteSpan(mode) {
   if (mode === 'wait') return 12 + 8 + 20
-  if (mode === 'catch') return 5 + 6 + 3 + 20
+  if (mode === 'catch') return 5 + 6 + 2 + 20
   return 14 + 6 + 8 + 18
 }
 
@@ -643,14 +643,14 @@ function bitePose(b, m) {
     return { lift: 0, open: false, token: null }
   }
   if (b.mode === 'catch') {
-    const rise = [0, 1, 2, 3, 3]
+    const rise = [0, 2, 2, 4, 4]
     const hang = 6
-    const land = [2, 1, 0]
+    const land = [2, 0]
     if (t < rise.length) {
       const lift = rise[t]
-      return { lift: lift, open: lift >= 3, token: mouth - 1 - lift }
+      return { lift: lift, open: lift >= 4, token: mouth - 1 - lift }
     }
-    if (t < rise.length + hang) return { lift: 3, open: true, token: null }
+    if (t < rise.length + hang) return { lift: 4, open: true, token: null }
     const landAt = rise.length + hang
     if (t < landAt + land.length) return { lift: land[t - landAt], open: false, token: null }
     return { lift: 0, open: false, token: null }
@@ -662,7 +662,8 @@ function bitePose(b, m) {
   if (t < fall + sit) return { lift: 0, open: false, token: ground }
   if (t < fall + sit + chew) {
     const u = (t - fall - sit) / chew
-    return { lift: -1, open: true, token: Math.round(ground + (mouth + 1 - ground) * u) }
+    const lift = -2
+    return { lift: lift, open: true, token: Math.round(ground + (mouth - lift - ground) * u) }
   }
   return { lift: 0, open: false, token: null }
 }
@@ -695,6 +696,7 @@ function bodyMask(raw, floor, bg) {
     }
   }
   const seen = new Uint8Array(n)
+  const comps = []
   let best = []
   for (let i = 0; i < n; i++) {
     if (!on[i] || seen[i]) continue
@@ -706,27 +708,51 @@ function bodyMask(raw, floor, bg) {
       comp.push(cur)
       const x = cur % 16
       const y = (cur / 16) | 0
-      if (x > 0 && on[cur - 1] && !seen[cur - 1]) {
-        seen[cur - 1] = 1
-        stack.push(cur - 1)
-      }
-      if (x < 15 && on[cur + 1] && !seen[cur + 1]) {
-        seen[cur + 1] = 1
-        stack.push(cur + 1)
-      }
-      if (y > 0 && on[cur - 16] && !seen[cur - 16]) {
-        seen[cur - 16] = 1
-        stack.push(cur - 16)
-      }
-      if (y + 1 < floor && on[cur + 16] && !seen[cur + 16]) {
-        seen[cur + 16] = 1
-        stack.push(cur + 16)
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || ny < 0 || nx >= 16 || ny >= floor) continue
+          const ni = ny * 16 + nx
+          if (on[ni] && !seen[ni]) {
+            seen[ni] = 1
+            stack.push(ni)
+          }
+        }
       }
     }
+    comps.push(comp)
     if (comp.length > best.length) best = comp
   }
   const mask = new Uint8Array(n)
   for (const i of best) mask[i] = 1
+  // A crown can sit a pixel off the head. Pull in any piece that close.
+  // Sky sparkles are farther, so they stay put.
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const comp of comps) {
+      if (mask[comp[0]]) continue
+      let close = false
+      for (const i of comp) {
+        const x = i % 16
+        const y = (i / 16) | 0
+        for (let dy = -2; dy <= 2 && !close; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            const nx = x + dx
+            const ny = y + dy
+            if (nx < 0 || ny < 0 || nx >= 16 || ny >= floor) continue
+            if (mask[ny * 16 + nx]) close = true
+          }
+        }
+        if (close) break
+      }
+      if (!close) continue
+      for (const i of comp) mask[i] = 1
+      grew = true
+    }
+  }
   return mask
 }
 
@@ -883,8 +909,8 @@ function paint(buf, x, y, rgb) {
 }
 
 function hop(buf) {
-  // One row. Sparkles stay put; only the pet body moves.
-  liftPet(buf, 1)
+  // Two rows, one terminal cell. A one-row hop splits the half-blocks.
+  liftPet(buf, 2)
 }
 
 function tally(e, result) {
