@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.13'
+const VERSION = '0.4.14'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const families = ['haiku', 'sonnet', 'opus', 'other']
@@ -452,16 +452,31 @@ function unit(n, div, suffix) {
 
 function rasterOf(b64) {
   const raw = present(b64)
+  const bg = bgOf(raw)
   const cols = 16
   const nums = []
   for (let y = 0; y < 9; y++) {
     for (let x = 0; x < cols; x++) {
       const top = ((2 * y) * cols + x) * 3
       const bot = ((2 * y + 1) * cols + x) * 3
-      nums.push(0x2580, rgb(raw, top), rgb(raw, bot))
+      // One color for the whole cell. A split fg/bg draws a hole on
+      // terminals that do not paint the lower half.
+      const c = pickPix(raw, top, bot, bg)
+      nums.push(0x2580, c, c)
     }
   }
   return bytesB64(new Uint8Array(Uint32Array.from(nums).buffer))
+}
+
+function pickPx(raw, i, bg) {
+  return Math.abs(raw[i] - bg[0]) + Math.abs(raw[i + 1] - bg[1]) + Math.abs(raw[i + 2] - bg[2])
+}
+
+function pickPix(raw, top, bot, bg) {
+  const dt = pickPx(raw, top, bg)
+  const db = pickPx(raw, bot, bg)
+  const i = db > dt ? bot : top
+  return rgb(raw, i)
 }
 
 function svgOf(b64) {
