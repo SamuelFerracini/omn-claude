@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.15'
+const VERSION = '0.4.16'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const families = ['haiku', 'sonnet', 'opus', 'other']
@@ -20,6 +20,14 @@ let noteLeft = 0
 let evolveFrom = null
 let evolveLeft = 0
 const evolveTicks = 50
+let reviveFrom = null
+let reviveTo = null
+let reviveLeft = 0
+let reviveGrowth = null
+const reviveStill = 8
+const reviveGlow = 10
+const reviveFlash = 3
+const reviveRise = 16
 const pending = new Map()
 const wakeStill = 14
 const wakeStir = 8
@@ -82,6 +90,10 @@ export function register(on) {
     wakeFrom = null
     evolveLeft = 0
     evolveFrom = null
+    reviveLeft = 0
+    reviveFrom = null
+    reviveTo = null
+    reviveGrowth = null
     note = ''
     noteLeft = 0
     bits = []
@@ -169,7 +181,9 @@ export function register(on) {
         $.ui.log('omn kept ' + petId + '. token xp went to ' + parsed.id)
         return result
       }
-      if (typeof parsed.growth === 'number' && portrait) {
+      // A revive owns the portrait until it ends. It plays any evolve afterwards.
+      if (parsed.revived) await beginRevive($, parsed.growth)
+      else if (typeof parsed.growth === 'number' && portrait) {
         // A new stage needs the new frames. refresh fetches them and plays the evolve.
         // A sleeper keeps the old frames until the wake animation refetches.
         const stageUp = stageOf(parsed.growth) > stageOf(portrait.growth)
@@ -221,6 +235,7 @@ function stirring() {
 }
 
 function shownPortrait() {
+  if (reviveLeft > reviveRise) return reviveFrom || portrait
   if (evolveFrom && evolveLeft > 0) {
     // Flip between the old and new form, faster as it nears the end.
     const period = Math.max(1, Math.ceil(evolveLeft / 10))
@@ -240,6 +255,8 @@ function stepFrame($) {
   if (wakeLeft > 0) {
     wakeLeft--
     if (wakeLeft === 0) finishWake($)
+  } else if (reviveLeft > 0) {
+    tickRevive($)
   } else if (evolveLeft > 0) {
     evolveLeft--
     if (evolveLeft === 0) {
@@ -261,7 +278,75 @@ function stepFrame($) {
 }
 
 function busy() {
-  return wakeLeft > 0 || evolveLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0
+  return wakeLeft > 0 || reviveLeft > 0 || evolveLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0
+}
+
+function petDead() {
+  return !!(portrait && portrait.status === 'dead')
+}
+
+function revivePhase() {
+  const spent = reviveStill + reviveGlow + reviveFlash + reviveRise - reviveLeft
+  if (spent < reviveStill) return 'still'
+  if (spent < reviveStill + reviveGlow) return 'glow'
+  if (spent < reviveStill + reviveGlow + reviveFlash) return 'flash'
+  return 'rise'
+}
+
+// beginRevive holds the dead portrait, brightens it with a small hop, flashes,
+// then swaps in the live portrait with a "revived!" note. It cancels a wake or
+// evolve in progress. tickRevive plays the evolve afterwards if the stage went up.
+async function beginRevive($, growth) {
+  if (reviveLeft > 0) return
+  wakeLeft = 0
+  wakeFrom = null
+  evolveLeft = 0
+  evolveFrom = null
+  bits = []
+  idleHop = 0
+  bite = null
+  reviveFrom = portrait
+  reviveTo = null
+  reviveGrowth = portrait && typeof portrait.growth === 'number' ? portrait.growth : null
+  reviveLeft = reviveStill + reviveGlow + reviveFlash + reviveRise
+  note = ''
+  noteLeft = 0
+  $.ui.toast('omn revived!')
+  $.ui.invalidate('ui.render')
+  try {
+    if (!petId) return
+    const res = await $.http.fetch(SERVER + '/p/' + petId + '.json?t=' + Date.now())
+    if (!res.ok) return
+    const data = JSON.parse(res.text)
+    if (!data.frames || !data.frames.length) return
+    if (typeof data.growth !== 'number' && typeof growth === 'number') data.growth = growth
+    if (typeof data.growth !== 'number' && typeof reviveGrowth === 'number') data.growth = reviveGrowth
+    if (reviveLeft <= 0) return
+    reviveTo = data
+    if (reviveLeft <= reviveRise) portrait = data
+  } catch (err) {}
+  $.ui.invalidate('ui.render')
+}
+
+function tickRevive($) {
+  reviveLeft--
+  if (reviveLeft === reviveRise) {
+    if (reviveTo) portrait = reviveTo
+    note = 'revived!'
+    noteLeft = 24
+  }
+  if (reviveLeft > 0) return
+  const missed = !reviveTo
+  if (reviveTo) portrait = reviveTo
+  const grew = !missed && typeof reviveGrowth === 'number' && stageOf(portrait.growth) > stageOf(reviveGrowth)
+  reviveFrom = null
+  reviveTo = null
+  reviveGrowth = null
+  if (grew) {
+    // The old live form is not on hand, so the evolve plays its burst and note without the flip.
+    evolveLeft = evolveTicks
+    burst()
+  } else if (missed) refresh($).catch(() => {})
 }
 
 async function finishWake($) {
@@ -281,11 +366,13 @@ async function rememberPet($, id) {
 }
 
 async function refresh($, growth) {
-  if (wakeLeft > 0 || !petId) return
+  if (wakeLeft > 0 || reviveLeft > 0 || !petId) return
   const res = await $.http.fetch(SERVER + '/p/' + petId + '.json?t=' + Date.now())
   if (!res.ok) return
   const data = JSON.parse(res.text)
   if (!data.frames || !data.frames.length) return
+  // A revive may have started while this fetch was out. It owns the portrait.
+  if (reviveLeft > 0) return
   if (typeof data.growth !== 'number' && typeof growth === 'number') data.growth = growth
   if (typeof data.growth !== 'number' && portrait && typeof portrait.growth === 'number') data.growth = portrait.growth
   if (portrait && typeof portrait.growth === 'number' && !evolveFrom && stageOf(data.growth) > stageOf(portrait.growth)) {
@@ -562,6 +649,11 @@ function queueBite(xp, kind) {
 }
 
 function stepFeed() {
+  // No bites on a dead or reviving pet. Queued bites wait until it is alive.
+  if (reviveLeft > 0 || petDead()) {
+    bite = null
+    return
+  }
   if (!bite) {
     bite = bites.shift() || null
     if (!bite) return
@@ -626,12 +718,89 @@ function present(b64) {
   paintBits(buf)
   paintSpark(buf)
   paintSleep(buf)
+  if (reviveLeft > 0) reviveFx(buf)
   return buf
 }
 
 function liftNow() {
   if (tick % 2 !== 0) return false
-  return stirring() || idleHop > 0
+  return stirring() || idleHop > 0 || reviveHop()
+}
+
+// The second half of the glow and the start of the rise hop.
+function reviveHop() {
+  if (reviveLeft <= 0) return false
+  const phase = revivePhase()
+  if (phase === 'glow') return reviveStill + reviveGlow + reviveFlash + reviveRise - reviveLeft - reviveStill >= reviveGlow >> 1
+  return phase === 'rise' && reviveLeft > reviveRise - 6
+}
+
+function reviveFx(buf) {
+  const phase = revivePhase()
+  if (phase === 'still') return
+  if (phase === 'flash') {
+    buf.fill(255)
+    return
+  }
+  if (phase === 'rise') {
+    sparkle(buf)
+    return
+  }
+  const bg = rgb(buf, 0)
+  // First half flickers. Second half stays lit and brighter while it hops.
+  if (!reviveHop()) {
+    if (tick % 2 === 0) wash(buf, bg)
+    else jitter(buf, tick % 4 < 2 ? 1 : -1)
+    return
+  }
+  wash(buf, bg)
+  wash(buf, bg)
+}
+
+function wash(buf, bg) {
+  for (let i = 0; i < buf.length; i += 3) {
+    if (near(rgb(buf, i), bg)) continue
+    buf[i] = (buf[i] + 255 * 3) >> 2
+    buf[i + 1] = (buf[i + 1] + 255 * 3) >> 2
+    buf[i + 2] = (buf[i + 2] + 255 * 3) >> 2
+  }
+}
+
+function near(a, b) {
+  return Math.abs((a >> 16) - (b >> 16)) + Math.abs(((a >> 8) & 255) - ((b >> 8) & 255)) + Math.abs((a & 255) - (b & 255)) < 24
+}
+
+function jitter(buf, dx) {
+  const copy = buf.slice()
+  for (let y = 0; y < 18; y++) {
+    for (let x = 0; x < 16; x++) {
+      let sx = x - dx
+      if (sx < 0 || sx >= 16) sx = x
+      const di = (y * 16 + x) * 3
+      const si = (y * 16 + sx) * 3
+      buf[di] = copy[si]
+      buf[di + 1] = copy[si + 1]
+      buf[di + 2] = copy[si + 2]
+    }
+  }
+}
+
+const reviveSpots = [
+  [2, 2],
+  [13, 3],
+  [4, 8],
+  [11, 6],
+  [7, 1],
+  [14, 10],
+  [1, 12],
+  [9, 4],
+]
+
+function sparkle(buf) {
+  for (let i = 0; i < 4; i++) {
+    const s = reviveSpots[(tick + i * 3) % reviveSpots.length]
+    paint(buf, s[0], s[1], i % 2 === 0 ? [0xf5, 0xd4, 0x4a] : [0xff, 0xff, 0xff])
+  }
 }
 
 function bitePose(b, m) {
@@ -864,7 +1033,7 @@ function paintSleep(buf) {
 }
 
 function showZ() {
-  if (note === 'awake!' || note === 'evolved!') return false
+  if (note === 'awake!' || note === 'evolved!' || note === 'revived!') return false
   if (wakeLeft > 0 || wakeFrom) return true
   return !!(portrait && portrait.status === 'sleeping')
 }
