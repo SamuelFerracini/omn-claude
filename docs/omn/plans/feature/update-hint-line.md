@@ -30,10 +30,10 @@ Show a short hint right below the update line that tells the user how to update 
 
 ## Done when
 
-- [ ] When a newer version exists, the band shows `update to X.Y.Z` with `/plugin → omn → update now` dimmed below it.
+- [x] When a newer version exists, the band shows `update to X.Y.Z` with `/plugin → omn → update now` dimmed below it.
 
-- [ ] With no update, neither line shows.
+- [x] With no update, neither line shows.
 
-- [ ] `node --check plugin/claude/hooks/register.js` passes.
+- [x] `node --check plugin/claude/hooks/register.js` passes.
 
 - [ ] Changes are committed on the branch.
