@@ -445,6 +445,7 @@ function meterText(Box, Text, growth) {
   if (note) lines.push(Text({ color: cFed, children: [note] }))
   lines.push(Text({ color: cFed, children: ['ssh omn.sh'] }))
   if (updateLine) lines.push(Text({ color: cWarn, children: [updateLine] }))
+  if (updateLine) lines.push(Text({ color: cDim, children: ['/plugin → omn → update now'] }))
   return Box({ flexDirection: 'column', children: lines })
 }
 
