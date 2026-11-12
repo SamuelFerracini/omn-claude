@@ -1390,7 +1390,8 @@ async function postSession($, op) {
         sig: signed.sig,
       }),
     })
-    if (res.status === 401 || res.status === 404) return
+    if (res.status === 401) return
+    if (await handleStatus($, res)) return
     if (!res.ok) throw new Error('omn ' + res.status)
   } catch (err) {
     if (op === 'open') $.ui.log('omn stay-awake skipped: ' + (err && err.message ? err.message : 'sign'))
@@ -1553,8 +1554,35 @@ async function post($, turnId, deltas) {
     }),
   })
   if (res.status === 401) return null
+  if (await handleStatus($, res)) return null
   if (!res.ok) throw new Error('omn ' + res.status)
   return JSON.parse(res.text)
+}
+
+const NO_PET_HINT = 'No pet yet. Run `ssh omn.sh` to hatch it.'
+const NO_PET_FLAG = 'noPetHintShown'
+
+// Shared status handling for /v1/claude and /v1/claude/session.
+// 404 (no pet): show the hint once, persisted in $.store. 429: drop silently.
+// 200: clear the hint flag so it can return later. Returns true when the
+// response is fully handled and the caller must stop without logging or throwing.
+export async function handleStatus($, res) {
+  if (res.status === 429) return true
+  if (res.status === 404) {
+    try {
+      if (!(await $.store.get(NO_PET_FLAG))) {
+        await $.store.set(NO_PET_FLAG, '1')
+        $.ui.toast(NO_PET_HINT)
+      }
+    } catch (_) {}
+    return true
+  }
+  if (res.status === 200) {
+    try {
+      if (await $.store.get(NO_PET_FLAG)) await $.store.set(NO_PET_FLAG, '')
+    } catch (_) {}
+  }
+  return false
 }
 
 function textOf(v) {
