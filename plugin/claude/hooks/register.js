@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.18'
+const VERSION = '0.4.19'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -425,7 +425,20 @@ function meterText(Box, Text, growth) {
   row.push(Text({ color: cText, children: [compact(g)] }))
   const lines = []
   const name = cleanLabel(portrait && portrait.name, 32)
-  if (name) lines.push(Text({ color: cText, children: [name] }))
+  const head = []
+  if (name) head.push(Text({ color: cText, children: [name] }))
+  if (portrait && portrait.gleam === true) head.push(Text({ color: cFed, children: ['✦'] }))
+  if (portrait && portrait.status === 'sleeping') head.push(Text({ color: cDim, children: ['sleeping'] }))
+  else if (portrait && portrait.status === 'dead') head.push(Text({ color: cWarn, children: ['dead'] }))
+  if (head.length === 1 && name) lines.push(head[0])
+  else if (head.length) lines.push(Box({ flexDirection: 'row', columnGap: 1, children: head }))
+  const info = []
+  const species = cleanLabel(portrait && portrait.species, 24)
+  if (species && species !== 'Shadow') info.push(species)
+  const stageName = cleanLabel(portrait && portrait.stage_name, 24)
+  if (stageName && stageName !== name) info.push(stageName)
+  info.push('stage ' + stageOf(g))
+  lines.push(Text({ color: cDim, children: [info.join(' · ')] }))
   lines.push(Box({ flexDirection: 'row', columnGap: 1, children: row }))
   const care = careLine(Box, Text)
   if (care) lines.push(care)
@@ -506,7 +519,7 @@ function noteMeal(fam, xp) {
 
 function applyCare(dst, src) {
   if (!dst || !src) return
-  for (const k of ['name', 'hunger', 'mood', 'streak', 'gleam', 'status']) {
+  for (const k of ['name', 'hunger', 'mood', 'streak', 'gleam', 'status', 'species', 'stage_name']) {
     if (src[k] !== undefined && src[k] !== null) dst[k] = src[k]
   }
 }

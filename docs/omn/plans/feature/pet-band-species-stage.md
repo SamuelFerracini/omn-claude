@@ -52,12 +52,12 @@ Show species, stage, status and gleam in the band, compactly, in the existing st
 
 ## Done when
 
-- [ ] The band shows species · stage name · `stage N` under the name when the JSON has the new fields, and only `stage N` when it does not.
+- [x] The band shows species · stage name · `stage N` under the name when the JSON has the new fields, and only `stage N` when it does not.
 
-- [ ] A sleeping or dead pet shows the status tag. A gleam pet shows `✦`.
+- [x] A sleeping or dead pet shows the status tag. A gleam pet shows `✦`.
 
-- [ ] No errors when any of these fields is missing or has the wrong type.
+- [x] No errors when any of these fields is missing or has the wrong type.
 
-- [ ] Both version strings are bumped and match.
+- [x] Both version strings are bumped and match.
 
-- [ ] Committed on the branch.
+- [x] Committed on the branch.
