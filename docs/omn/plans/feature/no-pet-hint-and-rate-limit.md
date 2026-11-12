@@ -50,12 +50,12 @@ A new user who starts with the plugin is told once to hatch their pet over SSH. 
 
 ## Done when
 
-- [ ] A fresh key (404) gets the hint once, not every turn or every session ping.
+- [x] A fresh key (404) gets the hint once, not every turn or every session ping.
 
-- [ ] After a 200, the flag clears; XP posts work as before.
+- [x] After a 200, the flag clears; XP posts work as before.
 
-- [ ] A 429 gives no user-visible output, no log, and no retry.
+- [x] A 429 gives no user-visible output, no log, and no retry.
 
-- [ ] Tests cover: 404 with the JSON body, 404 without a body, 429, and 200 (including flag clear). All pass with `node --test`.
+- [x] Tests cover: 404 with the JSON body, 404 without a body, 429, and 200 (including flag clear). All pass with `node --test`.
 
-- [ ] Commit on the branch with a Conventional Commits message.
+- [x] Commit on the branch with a Conventional Commits message.
