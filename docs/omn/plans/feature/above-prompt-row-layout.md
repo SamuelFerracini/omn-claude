@@ -45,10 +45,10 @@ When the band is wide enough, show other plugins' output to the right of the pet
 
 ## Done when
 
-- [ ] At `bodyColumns >= 60` with another plugin's band present, the returned tree is a row: pet first, then the other band in a grow/shrink Box.
+- [x] At `bodyColumns >= 60` with another plugin's band present, the returned tree is a row: pet first, then the other band in a grow/shrink Box.
 
-- [ ] Below 60, or with `bodyColumns` missing, the tree is a column as before.
+- [x] Below 60, or with `bodyColumns` missing, the tree is a column as before.
 
-- [ ] With no other band, output is unchanged from today.
+- [x] With no other band, output is unchanged from today.
 
-- [ ] `claude plugin validate plugin/claude` passes. If the repo has a test setup (`claude plugin test`), add a test covering the three cases above.
+- [x] `claude plugin validate plugin/claude` passes. If the repo has a test setup (`claude plugin test`), add a test covering the three cases above.
