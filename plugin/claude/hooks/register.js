@@ -33,6 +33,17 @@ const reviveStill = 8
 const reviveGlow = 10
 const reviveFlash = 3
 const reviveRise = 16
+let arriveFrom = null
+let arriveTo = null
+let arriveLeft = 0
+let arriveName = ''
+const arriveSpans = [
+  ['leave', 10],
+  ['drop', 10],
+  ['wobble', 16],
+  ['hatch', 4],
+]
+const arriveTotal = arriveSpans.reduce((n, s) => n + s[1], 0)
 const pending = new Map()
 const wakeStill = 14
 const wakeStir = 8
@@ -109,6 +120,7 @@ export function register(on) {
     reviveFrom = null
     reviveTo = null
     reviveGrowth = null
+    clearArrive()
     note = ''
     noteLeft = 0
     bits = []
@@ -258,6 +270,7 @@ async function holdSession($, open) {
 }
 
 function beginWake() {
+  if (arriveLeft > 0) return
   wakeFrom = portrait
   wakeLeft = wakeStill + wakeStir
 }
@@ -289,6 +302,8 @@ function stepFrame($) {
     if (wakeLeft === 0) finishWake($)
   } else if (reviveLeft > 0) {
     tickRevive($)
+  } else if (arriveLeft > 0) {
+    tickArrive($)
   } else if (evolveLeft > 0) {
     evolveLeft--
     if (evolveLeft === 0) {
@@ -310,7 +325,7 @@ function stepFrame($) {
 }
 
 function busy() {
-  return wakeLeft > 0 || reviveLeft > 0 || evolveLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0
+  return wakeLeft > 0 || reviveLeft > 0 || arriveLeft > 0 || evolveLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0
 }
 
 function petDead() {
@@ -330,6 +345,7 @@ function revivePhase() {
 // evolve in progress. tickRevive plays the evolve afterwards if the stage went up.
 async function beginRevive($, growth) {
   if (reviveLeft > 0) return
+  cancelArrive()
   wakeLeft = 0
   wakeFrom = null
   evolveLeft = 0
@@ -381,6 +397,70 @@ function tickRevive($) {
   } else if (missed) refresh($).catch(() => {})
 }
 
+function arrivePhase() {
+  return arriveStep()[0]
+}
+
+// Returns [phase, ticks spent inside that phase].
+function arriveStep() {
+  let spent = arriveTotal - arriveLeft
+  for (const s of arriveSpans) {
+    if (spent < s[1]) return [s[0], spent]
+    spent -= s[1]
+  }
+  return ['hatch', arriveSpans[3][1] - 1]
+}
+
+function clearArrive() {
+  arriveLeft = 0
+  arriveFrom = null
+  arriveTo = null
+  arriveName = ''
+}
+
+// cancelArrive stops the scene early and shows the new pet, so a revive or a
+// second letgo never starts on the old pet's frames.
+function cancelArrive() {
+  if (arriveLeft <= 0) return
+  if (arriveTo) portrait = arriveTo
+  clearArrive()
+}
+
+// beginArrive runs after a letgo once the new egg's frames are loaded. The old
+// pet floats up and fades, the egg drops in with a bounce, wobbles faster and
+// cracks, then a flash ends on the stage-0 portrait with a "hatched!" note.
+// It cancels a wake or evolve in progress. portrait holds the old pet until
+// the leave phase ends, so the meter and name match what is on screen.
+function beginArrive(old, name) {
+  if (reviveLeft > 0 || !old || !old.frames || !old.frames.length || !portrait || portrait === old) return
+  wakeLeft = 0
+  wakeFrom = null
+  evolveLeft = 0
+  evolveFrom = null
+  bits = []
+  idleHop = 0
+  bite = null
+  arriveFrom = old
+  arriveTo = portrait
+  arriveName = name
+  portrait = old
+  arriveLeft = arriveTotal
+  note = ''
+  noteLeft = 0
+}
+
+function tickArrive($) {
+  arriveLeft--
+  if (arriveLeft === arriveTotal - arriveSpans[0][1] && arriveTo) portrait = arriveTo
+  if (arriveLeft > 0) return
+  if (arriveTo) portrait = arriveTo
+  const name = arriveName
+  clearArrive()
+  note = 'hatched! meet ' + name
+  noteLeft = 30
+  $.ui.toast('omn hatched! meet ' + name)
+}
+
 async function finishWake($) {
   try {
     await refresh($)
@@ -398,13 +478,13 @@ async function rememberPet($, id) {
 }
 
 async function refresh($, growth) {
-  if (wakeLeft > 0 || reviveLeft > 0 || !petId) return
+  if (wakeLeft > 0 || reviveLeft > 0 || arriveLeft > 0 || !petId) return
   const res = await $.http.fetch(SERVER + '/p/' + petId + '.json?t=' + Date.now())
   if (!res.ok) return
   const data = JSON.parse(res.text)
   if (!data.frames || !data.frames.length) return
   // A revive may have started while this fetch was out. It owns the portrait.
-  if (reviveLeft > 0) return
+  if (reviveLeft > 0 || arriveLeft > 0) return
   if (typeof data.growth !== 'number' && typeof growth === 'number') data.growth = growth
   if (typeof data.growth !== 'number' && portrait && typeof portrait.growth === 'number') data.growth = portrait.growth
   if (portrait && typeof portrait.growth === 'number' && !evolveFrom && stageOf(data.growth) > stageOf(portrait.growth)) {
@@ -696,7 +776,7 @@ function queueBite(xp, kind) {
 
 function stepFeed() {
   // No bites on a dead or reviving pet. Queued bites wait until it is alive.
-  if (reviveLeft > 0 || petDead()) {
+  if (reviveLeft > 0 || arriveLeft > 0 || petDead()) {
     bite = null
     return
   }
@@ -765,6 +845,7 @@ function present(b64) {
   paintSpark(buf)
   paintSleep(buf)
   if (reviveLeft > 0) reviveFx(buf)
+  if (arriveLeft > 0) arriveFx(buf)
   return buf
 }
 
@@ -801,6 +882,73 @@ function reviveFx(buf) {
   }
   wash(buf, bg)
   wash(buf, bg)
+}
+
+const dropLift = [16, 12, 8, 4, 0, 2, 0, 2, 0, 0]
+const wobbleDx = [0, 1, 0, -1]
+const crackSpots = [
+  [0, -2],
+  [1, -1],
+  [0, 0],
+  [-1, 1],
+  [0, 2],
+  [1, 3],
+]
+
+function arriveFx(buf) {
+  const [phase, t] = arriveStep()
+  const bg = rgb(buf, 0)
+  if (phase === 'leave') {
+    liftPet(buf, t * 2)
+    fade(buf, bg, Math.min(4, Math.ceil(t / 2)))
+    return
+  }
+  if (phase === 'drop') {
+    liftPet(buf, dropLift[t])
+    return
+  }
+  if (phase === 'wobble') {
+    cracks(buf, 1 + Math.floor(t / 3))
+    const period = t < 5 ? 3 : t < 10 ? 2 : 1
+    const dx = wobbleDx[Math.floor(t / period) % wobbleDx.length]
+    if (dx) jitter(buf, dx)
+    return
+  }
+  if (t < 2) buf.fill(255)
+  else wash(buf, bg)
+}
+
+// Dark cracks down the middle of the egg's body, more of them as the wobble goes on.
+function cracks(buf, count) {
+  const bg = bgOf(buf)
+  const mask = bodyMask(buf, floorAt(buf), bg)
+  let lo = 18
+  let hi = -1
+  let sum = 0
+  let n = 0
+  for (let id = 0; id < mask.length; id++) {
+    if (!mask[id]) continue
+    const y = Math.floor(id / 16)
+    if (y < lo) lo = y
+    if (y > hi) hi = y
+    sum += id % 16
+    n++
+  }
+  if (!n) return
+  const cx = Math.round(sum / n)
+  const cy = Math.round((lo + hi) / 2)
+  for (let i = 0; i < Math.min(count, crackSpots.length); i++) {
+    paint(buf, cx + crackSpots[i][0], cy + crackSpots[i][1], [0x2a, 0x26, 0x40])
+  }
+}
+
+// Blend the pet toward the background, k quarters of the way.
+function fade(buf, bg, k) {
+  const c = [bg >> 16, (bg >> 8) & 255, bg & 255]
+  for (let i = 0; i < buf.length; i += 3) {
+    if (near(rgb(buf, i), bg)) continue
+    for (let j = 0; j < 3; j++) buf[i + j] = (buf[i + j] * (4 - k) + c[j] * k) >> 2
+  }
 }
 
 function wash(buf, bg) {
@@ -1079,6 +1227,7 @@ function paintSleep(buf) {
 }
 
 function showZ() {
+  if (arriveLeft > 0 || note.startsWith('hatched!')) return false
   if (note === 'awake!' || note === 'evolved!' || note === 'revived!') return false
   if (wakeLeft > 0 || wakeFrom) return true
   return !!(portrait && portrait.status === 'sleeping')
@@ -1314,6 +1463,7 @@ async function letgoConfirm($, armedAt) {
   if (!armedAt || Date.now() - armedAt >= letgoWindow) return { text: 'run /omn-letgo first' }
   const done = await postPet($, 'letgo', '')
   if (!done.pet) return { text: done.text }
+  const old = portrait
   resetPortraitState()
   const id = typeof done.pet.id === 'string' ? done.pet.id : ''
   try {
@@ -1323,7 +1473,11 @@ async function letgoConfirm($, armedAt) {
     }
     await refresh($)
   } catch (err) {}
-  return { text: 'omn let go. new egg ' + (id || petId) }
+  const name = cleanLabel(done.pet.name, 32) || id || petId
+  // Only a refresh that swapped in the new egg's frames starts the scene.
+  beginArrive(old, name)
+  $.ui.invalidate('ui.render')
+  return { text: 'omn let go. meet ' + name + ' (' + (id || petId) + ')' }
 }
 
 function resetPortraitState() {
@@ -1335,6 +1489,7 @@ function resetPortraitState() {
   reviveFrom = null
   reviveTo = null
   reviveGrowth = null
+  clearArrive()
   note = ''
   noteLeft = 0
   bits = []
