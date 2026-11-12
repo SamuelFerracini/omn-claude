@@ -38,10 +38,10 @@ After a successful letgo, the portrait plays a short scene: the old pet leaves, 
 
 ## Done when
 
-- [ ] `/omn-letgo` then `/omn-letgo confirm` plays leave, drop, wobble and hatch, and ends on the egg portrait with the `hatched! meet <name>` note.
+- [x] `/omn-letgo` then `/omn-letgo confirm` plays leave, drop, wobble and hatch, and ends on the egg portrait with the `hatched! meet <name>` note.
 
-- [ ] A failed letgo or a failed frame fetch plays no animation and nothing breaks.
+- [x] A failed letgo or a failed frame fetch plays no animation and nothing breaks.
 
-- [ ] A wake, evolve or revive starting during the sequence cannot corrupt it, and the sequence does not leave stale state.
+- [x] A wake, evolve or revive starting during the sequence cannot corrupt it, and the sequence does not leave stale state.
 
-- [ ] Existing tests (if any) pass. The plugin loads without errors.
+- [x] Existing tests (if any) pass. The plugin loads without errors.
