@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.19'
+const VERSION = '0.4.20'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -12,7 +12,7 @@ let keyPath = ''
 let letgoArmedAt = 0
 const letgoWindow = 60000
 const nickRule = /^[A-Za-z0-9_-]{1,12}$/
-const usageText = 'usage: /omn <pet id> | /omn key <private-key> | /omn name <nick> | /omn letgo'
+const usageText = 'usage: /omn <pet id> | /omn key <private-key>'
 let petId = ''
 let warned = false
 let tick = 0
@@ -83,8 +83,18 @@ export function register(on) {
     if (wakeLeft === 0) await refresh($)
     await $.command.register({
       name: 'omn',
-      description: 'Show your omn pet, set its id or SSH key, rename it, or let it go',
-      argumentHint: '[pet id | key <path> | name <nick> | letgo]',
+      description: 'Show your omn pet, or set its id or SSH key',
+      argumentHint: '[pet id | key <path>]',
+    })
+    await $.command.register({
+      name: 'omn-name',
+      description: 'Rename your omn pet',
+      argumentHint: '<nick>',
+    })
+    await $.command.register({
+      name: 'omn-letgo',
+      description: 'Let your omn pet go to the graveyard and hatch a new egg',
+      argumentHint: '[confirm]',
     })
     return next(e)
   })
@@ -116,15 +126,11 @@ export function register(on) {
 
   on('command.run', { command: 'omn' }, async ($, e) => {
     const arg = (e.args || '').trim()
-    const armedAt = letgoArmedAt
-    if (arg !== 'letgo' && arg !== 'letgo confirm') letgoArmedAt = 0
-    if (arg === 'name' || arg.startsWith('name ')) return nameCommand($, arg.slice(4).trim())
-    if (arg === 'letgo') return letgoArm()
-    if (arg === 'letgo confirm') return letgoConfirm($, armedAt)
+    letgoArmedAt = 0
     if (arg === '' || arg === 'show') {
       await refresh($)
       $.ui.invalidate('ui.render')
-      return { text: petId ? 'omn ' + petId : 'usage: /omn <pet id> | key <path> | name <nick> | letgo' }
+      return { text: petId ? 'omn ' + petId : 'usage: /omn <pet id> | key <path>' }
     }
     if (arg.startsWith('key ') || arg.startsWith('/') || arg.startsWith('~') || arg.startsWith('.')) {
       keyPath = await preferPrivate($, arg.startsWith('key ') ? arg.slice(4).trim() : arg)
@@ -139,6 +145,20 @@ export function register(on) {
       return { text: 'omn ' + arg }
     }
     return { text: usageText }
+  })
+
+  on('command.run', { command: 'omn-name' }, async ($, e) => {
+    letgoArmedAt = 0
+    return nameCommand($, (e.args || '').trim())
+  })
+
+  on('command.run', { command: 'omn-letgo' }, async ($, e) => {
+    const arg = (e.args || '').trim()
+    const armedAt = letgoArmedAt
+    if (arg === '') return letgoArm()
+    letgoArmedAt = 0
+    if (arg === 'confirm') return letgoConfirm($, armedAt)
+    return { text: 'usage: /omn-letgo [confirm]' }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -1272,7 +1292,7 @@ async function postPet($, op, nick) {
 }
 
 async function nameCommand($, nick) {
-  if (!nickRule.test(nick)) return { text: 'usage: /omn name <nick> (a-z A-Z 0-9 _ -, max 12)' }
+  if (!nickRule.test(nick)) return { text: 'usage: /omn-name <nick> (a-z A-Z 0-9 _ -, max 12)' }
   const done = await postPet($, 'name', nick)
   if (!done.pet) return { text: done.text }
   try {
@@ -1285,13 +1305,13 @@ function letgoArm() {
   letgoArmedAt = Date.now()
   const name = cleanLabel(portrait && portrait.name, 32) || petId || 'your pet'
   return {
-    text: 'let go ' + name + '? it goes to the graveyard and a new egg hatches. cannot be undone. run /omn letgo confirm within 60s',
+    text: 'let go ' + name + '? it goes to the graveyard and a new egg hatches. cannot be undone. run /omn-letgo confirm within 60s',
   }
 }
 
 async function letgoConfirm($, armedAt) {
   letgoArmedAt = 0
-  if (!armedAt || Date.now() - armedAt >= letgoWindow) return { text: 'run /omn letgo first' }
+  if (!armedAt || Date.now() - armedAt >= letgoWindow) return { text: 'run /omn-letgo first' }
   const done = await postPet($, 'letgo', '')
   if (!done.pet) return { text: done.text }
   resetPortraitState()
