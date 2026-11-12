@@ -72,12 +72,12 @@ The omn.sh server is getting a new signed endpoint. It is built in a separate re
 
 ## Done when
 
-- [ ] Both subcommands work as described against the contract above.
+- [x] Both subcommands work as described against the contract above.
 
-- [ ] Letgo cannot run without `confirm` within 60s of the first call.
+- [x] Letgo cannot run without `confirm` within 60s of the first call.
 
-- [ ] The canonical string is byte-exact with the contract. Check this with a quick node snippet that prints it for fixed inputs.
+- [x] The canonical string is byte-exact with the contract. Check this with a quick node snippet that prints it for fixed inputs.
 
-- [ ] `node --check plugin/claude/hooks/register.js` passes.
+- [x] `node --check plugin/claude/hooks/register.js` passes.
 
-- [ ] Versions are bumped and the README is updated.
+- [x] Versions are bumped and the README is updated.

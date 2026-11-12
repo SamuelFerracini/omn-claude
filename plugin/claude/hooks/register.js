@@ -2,12 +2,16 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.16'
+const VERSION = '0.4.17'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const families = ['haiku', 'sonnet', 'opus', 'other']
 
 let keyPath = ''
+let letgoArmedAt = 0
+const letgoWindow = 60000
+const nickRule = /^[A-Za-z0-9_-]{1,12}$/
+const usageText = 'usage: /omn <pet id> | /omn key <private-key> | /omn name <nick> | /omn letgo'
 let petId = ''
 let warned = false
 let tick = 0
@@ -78,8 +82,8 @@ export function register(on) {
     if (wakeLeft === 0) await refresh($)
     await $.command.register({
       name: 'omn',
-      description: 'Show your omn pet, or set its id or SSH key',
-      argumentHint: '[pet id | key <path>]',
+      description: 'Show your omn pet, set its id or SSH key, rename it, or let it go',
+      argumentHint: '[pet id | key <path> | name <nick> | letgo]',
     })
     return next(e)
   })
@@ -111,10 +115,15 @@ export function register(on) {
 
   on('command.run', { command: 'omn' }, async ($, e) => {
     const arg = (e.args || '').trim()
+    const armedAt = letgoArmedAt
+    if (arg !== 'letgo' && arg !== 'letgo confirm') letgoArmedAt = 0
+    if (arg === 'name' || arg.startsWith('name ')) return nameCommand($, arg.slice(4).trim())
+    if (arg === 'letgo') return letgoArm()
+    if (arg === 'letgo confirm') return letgoConfirm($, armedAt)
     if (arg === '' || arg === 'show') {
       await refresh($)
       $.ui.invalidate('ui.render')
-      return { text: petId ? 'omn ' + petId : 'usage: /omn <pet id>' }
+      return { text: petId ? 'omn ' + petId : 'usage: /omn <pet id> | key <path> | name <nick> | letgo' }
     }
     if (arg.startsWith('key ') || arg.startsWith('/') || arg.startsWith('~') || arg.startsWith('.')) {
       keyPath = await preferPrivate($, arg.startsWith('key ') ? arg.slice(4).trim() : arg)
@@ -128,7 +137,7 @@ export function register(on) {
       await rememberPet($, arg)
       return { text: 'omn ' + arg }
     }
-    return { text: 'usage: /omn <pet id> | /omn key <private-key>' }
+    return { text: usageText }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -1218,6 +1227,83 @@ function sessionCanonical(pubkey, ts, nonce, op) {
     JSON.stringify(op) +
     '}'
   )
+}
+
+function petCanonical(pubkey, ts, nonce, op, nick) {
+  return sessionCanonical(pubkey, ts, nonce, op).slice(0, -1) + ',"nick":' + JSON.stringify(nick) + '}'
+}
+
+// Posts a signed name or letgo. Returns { text } on failure, { pet } on 200. Never throws.
+async function postPet($, op, nick) {
+  try {
+    const nonce = sessionNonce()
+    const signed = await signPayload($, nonce, (pubkey, ts) => petCanonical(pubkey, ts, nonce, op, nick))
+    if (!signed) return { text: 'omn: /omn key <ssh private key>' }
+    const res = await $.http.fetch(SERVER + '/v1/claude/pet', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pubkey: signed.pubkey, ts: signed.ts, nonce, op, nick, sig: signed.sig }),
+    })
+    if (res.status === 400) return { text: 'bad nick' }
+    if (res.status === 401) return { text: 'signature rejected' }
+    if (res.status === 404) return { text: 'no pet for this key' }
+    if (!res.ok) return { text: 'omn ' + res.status }
+    return { pet: JSON.parse(res.text) }
+  } catch (err) {
+    return { text: 'omn: ' + (err && err.message ? err.message : 'failed') }
+  }
+}
+
+async function nameCommand($, nick) {
+  if (!nickRule.test(nick)) return { text: 'usage: /omn name <nick> (a-z A-Z 0-9 _ -, max 12)' }
+  const done = await postPet($, 'name', nick)
+  if (!done.pet) return { text: done.text }
+  try {
+    await refresh($)
+  } catch (err) {}
+  return { text: 'omn named ' + nick }
+}
+
+function letgoArm() {
+  letgoArmedAt = Date.now()
+  const name = cleanLabel(portrait && portrait.name, 32) || petId || 'your pet'
+  return {
+    text: 'let go ' + name + '? it goes to the graveyard and a new egg hatches. cannot be undone. run /omn letgo confirm within 60s',
+  }
+}
+
+async function letgoConfirm($, armedAt) {
+  letgoArmedAt = 0
+  if (!armedAt || Date.now() - armedAt >= letgoWindow) return { text: 'run /omn letgo first' }
+  const done = await postPet($, 'letgo', '')
+  if (!done.pet) return { text: done.text }
+  resetPortraitState()
+  const id = typeof done.pet.id === 'string' ? done.pet.id : ''
+  try {
+    if (/^[A-Za-z0-9_-]{8}$/.test(id) && id !== petId) {
+      petId = id
+      await $.store.set('petId', id)
+    }
+    await refresh($)
+  } catch (err) {}
+  return { text: 'omn let go. new egg ' + (id || petId) }
+}
+
+function resetPortraitState() {
+  wakeLeft = 0
+  wakeFrom = null
+  evolveLeft = 0
+  evolveFrom = null
+  reviveLeft = 0
+  reviveFrom = null
+  reviveTo = null
+  reviveGrowth = null
+  note = ''
+  noteLeft = 0
+  bits = []
+  bites = []
+  bite = null
+  idleHop = 0
 }
 
 async function signPayload($, nonce, bodyOf) {
