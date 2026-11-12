@@ -2,9 +2,10 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.17'
+const VERSION = '0.4.18'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
+const wideBandColumns = 60
 const families = ['haiku', 'sonnet', 'opus', 'other']
 
 let keyPath = ''
@@ -153,8 +154,10 @@ export function register(on) {
         : Svg({ children: svgOf(frame) })
     const pet = Box({ flexDirection: 'row', columnGap: 2, children: [picture, meterText(Box, Text, (wakeFrom || portrait).growth)] })
     const lines = [pet]
-    if (theirs) lines.push(theirs)
-    return Box({ flexDirection: 'column', children: lines })
+    if (theirs) lines.push(Box({ flexGrow: 1, flexShrink: 1, children: [theirs] }))
+    const cols = (e.props && e.props.bodyColumns) || 0
+    const wide = cols >= wideBandColumns
+    return Box({ flexDirection: wide ? 'row' : 'column', columnGap: 2, children: lines })
   })
 
   on('turn.step', async function* ($, e, next) {
