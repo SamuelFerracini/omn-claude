@@ -38,8 +38,8 @@ Rename and letgo become their own commands:
 
 ## Done when
 
-- [ ] `/omn:name <nick>`, `/omn:letgo` and `/omn:letgo confirm` work, and the 60s confirm window behaves as before.
+- [x] `/omn:name <nick>`, `/omn:letgo` and `/omn:letgo confirm` work, and the 60s confirm window behaves as before.
 
-- [ ] `/omn`, `/omn <id>` and `/omn key <path>` still work.
+- [x] `/omn`, `/omn <id>` and `/omn key <path>` still work.
 
-- [ ] README, usage strings and version are updated. Nothing else changes.
+- [x] README, usage strings and version are updated. Nothing else changes.
