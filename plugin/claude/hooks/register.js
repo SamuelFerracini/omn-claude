@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.22'
+const VERSION = '0.4.23'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -12,7 +12,7 @@ let keyPath = ''
 let letgoArmedAt = 0
 const letgoWindow = 60000
 const nickRule = /^[A-Za-z0-9_-]{1,12}$/
-const usageText = 'usage: /omn <pet id> | /omn key <private-key>'
+const usageText = 'usage: /omn | /omn key <private-key>'
 let petId = ''
 let warned = false
 let tick = 0
@@ -81,12 +81,10 @@ export function register(on) {
     try {
       await $.ui.close({ id: PANE })
     } catch (err) {}
-    if (!petId) {
-      const id = await petIdFromKey($)
-      if (id) await rememberPet($, id)
-    } else {
-      await refresh($)
-    }
+    // The key is the pet. A saved id that differs from it is stale. With no key the saved id stays.
+    const keyId = await petIdFromKey($)
+    if (keyId && keyId !== petId) await rememberPet($, keyId)
+    else await refresh($)
     const others = Object.keys(await otherSessions($)).length
     if (portrait && portrait.status === 'sleeping' && others === 0) beginWake()
     await postSession($, 'open')
@@ -94,8 +92,8 @@ export function register(on) {
     if (wakeLeft === 0) await refresh($)
     await $.command.register({
       name: 'omn',
-      description: 'Show your omn pet, or set its id or SSH key',
-      argumentHint: '[pet id | key <path>]',
+      description: 'Show your omn pet, or set its SSH key',
+      argumentHint: '[key <path>]',
     })
     await $.command.register({
       name: 'omn-name',
@@ -142,7 +140,7 @@ export function register(on) {
     if (arg === '' || arg === 'show') {
       await refresh($)
       $.ui.invalidate('ui.render')
-      return { text: petId ? 'omn ' + petId : 'usage: /omn <pet id> | key <path>' }
+      return { text: petId ? 'omn ' + petId : usageText }
     }
     if (arg.startsWith('key ') || arg.startsWith('/') || arg.startsWith('~') || arg.startsWith('.')) {
       keyPath = await preferPrivate($, arg.startsWith('key ') ? arg.slice(4).trim() : arg)
@@ -151,10 +149,6 @@ export function register(on) {
       const id = await petIdFromKey($)
       if (id) await rememberPet($, id)
       return { text: id ? 'omn ' + id : 'omn key ' + keyPath }
-    }
-    if (/^[A-Za-z0-9_-]{8}$/.test(arg)) {
-      await rememberPet($, arg)
-      return { text: 'omn ' + arg }
     }
     return { text: usageText }
   })
@@ -220,11 +214,9 @@ export function register(on) {
     try {
       const parsed = await post($, id, deltas)
       if (!parsed) return result
-      // The signature is the SSH key's pet. A different id must not replace the one on screen.
-      if (parsed.id && petId && parsed.id !== petId) {
-        $.ui.log('omn kept ' + petId + '. token xp went to ' + parsed.id)
-        return result
-      }
+      // The signature is the SSH key's pet, so the server's id is the one that got the xp.
+      const serverId = petIdOf(parsed.id)
+      if (serverId && serverId !== petId) await rememberPet($, serverId)
       // A revive owns the portrait until it ends. It plays any evolve afterwards.
       if (parsed.revived) await beginRevive($, parsed.growth)
       else if (typeof parsed.growth === 'number' && portrait) {
@@ -242,7 +234,6 @@ export function register(on) {
         noteMeal(fam, parsed.xp)
       }
       await checkUpdate($, true)
-      if (petIdOf(parsed.id) && !petId) await rememberPet($, petIdOf(parsed.id))
     } catch (err) {
       $.ui.log('omn xp skipped: ' + (err && err.message ? err.message : 'sign'))
     }
@@ -1608,7 +1599,10 @@ function nonceOf(id) {
 async function petIdFromKey($) {
   const key = await resolveKey($)
   if (!key) return ''
-  const run = await $.process.run(['ssh-keygen', '-lf', key])
+  // A .pub next to the key fingerprints without the passphrase.
+  const pair = keyPair(key)
+  const target = (await exists($, pair.pub)) ? pair.pub : key
+  const run = await $.process.run(['ssh-keygen', '-lf', target])
   if (!run || run.exitCode !== 0) return ''
   const found = String(run.stdout || '').match(/SHA256:([A-Za-z0-9+/]+)/)
   if (!found) return ''
@@ -1632,14 +1626,40 @@ async function preferPrivate($, key) {
   return key
 }
 
+// The identityfile lines of `ssh -G` output, in order, with a leading ~ expanded.
+export function identityFilesOf(output, home) {
+  const files = []
+  for (const line of String(output || '').split('\n')) {
+    const found = line.match(/^identityfile\s+(.+?)\s*$/i)
+    if (!found) continue
+    let path = found[1]
+    if (home && (path === '~' || path.startsWith('~/'))) path = home + path.slice(1)
+    files.push(path)
+  }
+  return files
+}
+
+// The first path whose private key or .pub exists. Returns that path.
+export async function firstKeyOf(paths, has) {
+  for (const path of paths) {
+    if (await has(path) || await has(path + '.pub')) return path
+  }
+  return ''
+}
+
+const fallbackKeys = ['id_ed25519', 'id_ecdsa', 'id_rsa']
+
 async function resolveKey($) {
   if (keyPath) return keyPath
   const home = await $.env.get('HOME')
   if (!home) return ''
-  for (const name of ['id_ed25519', 'id_rsa']) {
-    const path = home + '/.ssh/' + name
-    const exists = await $.fs.exists(path)
-    if (exists === true || (exists && exists.value === true)) return path
-  }
-  return ''
+  const has = (path) => exists($, path)
+  try {
+    const run = await $.process.run(['ssh', '-G', 'omn.sh'])
+    if (run && run.exitCode === 0) {
+      const found = await firstKeyOf(identityFilesOf(run.stdout, home), has)
+      if (found) return found
+    }
+  } catch (err) {}
+  return firstKeyOf(fallbackKeys.map((name) => home + '/.ssh/' + name), has)
 }

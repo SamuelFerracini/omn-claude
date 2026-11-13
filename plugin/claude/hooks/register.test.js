@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { handleStatus, petIdOf } from './register.js'
+import { handleStatus, petIdOf, identityFilesOf, firstKeyOf } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -63,4 +63,22 @@ test('petIdOf keeps only an 8-character pet id', () => {
   assert.equal(petIdOf('Ab3_-x9Z9'), '')
   assert.equal(petIdOf(12345678), '')
   assert.equal(petIdOf(undefined), '')
+})
+
+test('identityFilesOf keeps identityfile lines in order and expands ~', () => {
+  const out = 'host omn.sh\nidentityfile ~/.ssh/work\nIdentityFile /abs/key\nidentityfile ~/.ssh/id_rsa\nuser me\n'
+  assert.deepEqual(identityFilesOf(out, '/home/u'), ['/home/u/.ssh/work', '/abs/key', '/home/u/.ssh/id_rsa'])
+})
+
+test('identityFilesOf ignores other lines and empty output', () => {
+  assert.deepEqual(identityFilesOf('', '/h'), [])
+  assert.deepEqual(identityFilesOf(undefined, '/h'), [])
+  assert.deepEqual(identityFilesOf('identitiesonly yes\nidentityagent none', '/h'), [])
+})
+
+test('firstKeyOf picks the first existing key, .pub counts', async () => {
+  const present = new Set(['/h/b.pub', '/h/c'])
+  const has = async (p) => present.has(p)
+  assert.equal(await firstKeyOf(['/h/a', '/h/b', '/h/c'], has), '/h/b')
+  assert.equal(await firstKeyOf(['/h/a'], has), '')
 })
