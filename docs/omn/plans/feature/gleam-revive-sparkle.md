@@ -30,8 +30,8 @@ Add a short gleam sparkle animation and play it right after a revive ends when `
 
 ## Done when
 
-- [ ] A revived gleam pet plays the sparkle once, then shows its normal portrait.
+- [x] A revived gleam pet plays the sparkle once, then shows its normal portrait.
 
-- [ ] A pet without gleam behaves as it does today.
+- [x] A pet without gleam behaves as it does today.
 
-- [ ] Tests pass.
+- [x] Tests pass.
