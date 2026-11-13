@@ -35,12 +35,12 @@ Search after editing: `git grep -n -i -E "let ?go|letgo"`. Only the wire op and 
 
 ## Done when
 
-- [ ] `/omn-release` and `/omn-release confirm` work with the same 60s confirm window as before.
+- [x] `/omn-release` and `/omn-release confirm` work with the same 60s confirm window as before.
 
-- [ ] `/omn-letgo` no longer registered.
+- [x] `/omn-letgo` no longer registered.
 
-- [ ] Server request still sends `op:"letgo"`.
+- [x] Server request still sends `op:"letgo"`.
 
-- [ ] README updated.
+- [x] README updated.
 
-- [ ] Changes committed on the branch.
+- [x] Changes committed on the branch.

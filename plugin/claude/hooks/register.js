@@ -9,8 +9,8 @@ const wideBandColumns = 60
 const families = ['haiku', 'sonnet', 'opus', 'other']
 
 let keyPath = ''
-let letgoArmedAt = 0
-const letgoWindow = 60000
+let releaseArmedAt = 0
+const releaseWindow = 60000
 const nickRule = /^[A-Za-z0-9_-]{1,12}$/
 const usageText = 'usage: /omn | /omn key <private-key>'
 let petId = ''
@@ -104,8 +104,8 @@ export function register(on) {
       argumentHint: '<nick>',
     })
     await $.command.register({
-      name: 'omn-letgo',
-      description: 'Let your omn pet go to the graveyard and hatch a new egg',
+      name: 'omn-release',
+      description: 'Release your omn pet to the graveyard and hatch a new egg',
       argumentHint: '[confirm]',
     })
     return next(e)
@@ -140,7 +140,7 @@ export function register(on) {
 
   on('command.run', { command: 'omn' }, async ($, e) => {
     const arg = (e.args || '').trim()
-    letgoArmedAt = 0
+    releaseArmedAt = 0
     if (arg === '' || arg === 'show') {
       await refresh($)
       $.ui.invalidate('ui.render')
@@ -158,17 +158,17 @@ export function register(on) {
   })
 
   on('command.run', { command: 'omn-name' }, async ($, e) => {
-    letgoArmedAt = 0
+    releaseArmedAt = 0
     return nameCommand($, (e.args || '').trim())
   })
 
-  on('command.run', { command: 'omn-letgo' }, async ($, e) => {
+  on('command.run', { command: 'omn-release' }, async ($, e) => {
     const arg = (e.args || '').trim()
-    const armedAt = letgoArmedAt
-    if (arg === '') return letgoArm()
-    letgoArmedAt = 0
-    if (arg === 'confirm') return letgoConfirm($, armedAt)
-    return { text: 'usage: /omn-letgo [confirm]' }
+    const armedAt = releaseArmedAt
+    if (arg === '') return releaseArm()
+    releaseArmedAt = 0
+    if (arg === 'confirm') return releaseConfirm($, armedAt)
+    return { text: 'usage: /omn-release [confirm]' }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -454,14 +454,14 @@ function clearArrive() {
 }
 
 // cancelArrive stops the scene early and shows the new pet, so a revive or a
-// second letgo never starts on the old pet's frames.
+// second release never starts on the old pet's frames.
 function cancelArrive() {
   if (arriveLeft <= 0) return
   if (arriveTo) portrait = arriveTo
   clearArrive()
 }
 
-// beginArrive runs after a letgo once the new egg's frames are loaded. The old
+// beginArrive runs after a release once the new egg's frames are loaded. The old
 // pet floats up and fades, the egg drops in with a bounce, wobbles faster and
 // cracks, then a flash ends on the stage-0 portrait with a "hatched!" note.
 // It cancels a wake or evolve in progress. portrait holds the old pet until
@@ -1482,7 +1482,7 @@ function petCanonical(pubkey, ts, nonce, op, nick) {
   return sessionCanonical(pubkey, ts, nonce, op).slice(0, -1) + ',"nick":' + JSON.stringify(nick) + '}'
 }
 
-// Posts a signed name or letgo. Returns { text } on failure, { pet } on 200. Never throws.
+// Posts a signed name or release (wire op: letgo). Returns { text } on failure, { pet } on 200. Never throws.
 async function postPet($, op, nick) {
   try {
     const nonce = sessionNonce()
@@ -1513,17 +1513,18 @@ async function nameCommand($, nick) {
   return { text: 'omn named ' + nick }
 }
 
-function letgoArm() {
-  letgoArmedAt = Date.now()
+function releaseArm() {
+  releaseArmedAt = Date.now()
   const name = cleanLabel(portrait && portrait.name, 32) || petId || 'your pet'
   return {
-    text: 'let go ' + name + '? it goes to the graveyard and a new egg hatches. cannot be undone. run /omn-letgo confirm within 60s',
+    text: 'release ' + name + '? it goes to the graveyard and a new egg hatches. cannot be undone. run /omn-release confirm within 60s',
   }
 }
 
-async function letgoConfirm($, armedAt) {
-  letgoArmedAt = 0
-  if (!armedAt || Date.now() - armedAt >= letgoWindow) return { text: 'run /omn-letgo first' }
+async function releaseConfirm($, armedAt) {
+  releaseArmedAt = 0
+  if (!armedAt || Date.now() - armedAt >= releaseWindow) return { text: 'run /omn-release first' }
+  // server op name is still 'letgo'
   const done = await postPet($, 'letgo', '')
   if (!done.pet) return { text: done.text }
   const old = portrait
@@ -1540,7 +1541,7 @@ async function letgoConfirm($, armedAt) {
   // Only a refresh that swapped in the new egg's frames starts the scene.
   beginArrive(old, name)
   $.ui.invalidate('ui.render')
-  return { text: 'omn let go. meet ' + name + ' (' + (id || petId) + ')' }
+  return { text: 'omn released. meet ' + name + ' (' + (id || petId) + ')' }
 }
 
 function resetPortraitState() {
