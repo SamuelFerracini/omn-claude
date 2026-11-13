@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { handleStatus } from './register.js'
+import { handleStatus, petIdOf } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -54,4 +54,13 @@ test('other statuses are left to the caller', async () => {
   const { $, calls } = fake()
   assert.equal(await handleStatus($, { status: 500, ok: false }), false)
   assert.deepEqual(calls.toast, [])
+})
+
+test('petIdOf keeps only an 8-character pet id', () => {
+  assert.equal(petIdOf('Ab3_-x9Z'), 'Ab3_-x9Z')
+  assert.equal(petIdOf('../x?y=1'), '')
+  assert.equal(petIdOf('short'), '')
+  assert.equal(petIdOf('Ab3_-x9Z9'), '')
+  assert.equal(petIdOf(12345678), '')
+  assert.equal(petIdOf(undefined), '')
 })

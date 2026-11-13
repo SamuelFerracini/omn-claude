@@ -242,7 +242,7 @@ export function register(on) {
         noteMeal(fam, parsed.xp)
       }
       await checkUpdate($, true)
-      if (parsed.id && !petId) await rememberPet($, parsed.id)
+      if (petIdOf(parsed.id) && !petId) await rememberPet($, petIdOf(parsed.id))
     } catch (err) {
       $.ui.log('omn xp skipped: ' + (err && err.message ? err.message : 'sign'))
     }
@@ -469,6 +469,12 @@ async function finishWake($) {
   note = 'awake!'
   noteLeft = 24
   $.ui.invalidate('ui.render')
+}
+
+// A pet id from the server is stored and put in a URL path, so only the
+// 8-character id shape is kept. Anything else becomes ''.
+export function petIdOf(v) {
+  return typeof v === 'string' && /^[A-Za-z0-9_-]{8}$/.test(v) ? v : ''
 }
 
 async function rememberPet($, id) {
@@ -1466,9 +1472,9 @@ async function letgoConfirm($, armedAt) {
   if (!done.pet) return { text: done.text }
   const old = portrait
   resetPortraitState()
-  const id = typeof done.pet.id === 'string' ? done.pet.id : ''
+  const id = petIdOf(done.pet.id)
   try {
-    if (/^[A-Za-z0-9_-]{8}$/.test(id) && id !== petId) {
+    if (id && id !== petId) {
       petId = id
       await $.store.set('petId', id)
     }
