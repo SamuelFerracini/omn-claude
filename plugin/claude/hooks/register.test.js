@@ -56,8 +56,10 @@ test('other statuses are left to the caller', async () => {
   assert.deepEqual(calls.toast, [])
 })
 
-test('petIdOf keeps only an 8-character pet id', () => {
-  assert.equal(petIdOf('Ab3_-x9Z'), 'Ab3_-x9Z')
+test('petIdOf keeps only a server pet id (8 chars a-z2-7)', () => {
+  assert.equal(petIdOf('ab3xy7qz'), 'ab3xy7qz')
+  assert.equal(petIdOf('lP_kt9b-'), '')
+  assert.equal(petIdOf('Ab3xy7qz'), '')
   assert.equal(petIdOf('../x?y=1'), '')
   assert.equal(petIdOf('short'), '')
   assert.equal(petIdOf('Ab3_-x9Z9'), '')

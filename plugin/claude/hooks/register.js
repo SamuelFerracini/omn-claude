@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.23'
+const VERSION = '0.4.24'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -71,7 +71,7 @@ export function register(on) {
     const savedKey = await $.store.get('sshKey')
     if (typeof savedKey === 'string' && savedKey !== '') keyPath = await preferPrivate($, savedKey)
     const savedPet = await $.store.get('petId')
-    if (typeof savedPet === 'string' && savedPet !== '') petId = savedPet
+    petId = petIdOf(savedPet)
     $.clock.every(100, () => stepFrame($))
     $.clock.every(30000, () => {
       if (!sessionLive) return
@@ -84,10 +84,8 @@ export function register(on) {
     try {
       await $.ui.close({ id: PANE })
     } catch (err) {}
-    // The key is the pet. A saved id that differs from it is stale. With no key the saved id stays.
-    const keyId = await petIdFromKey($)
-    if (keyId && keyId !== petId) await rememberPet($, keyId)
-    else await refresh($)
+    // The server picks a random id unrelated to the key. A signed reply carries it.
+    await refresh($)
     const others = Object.keys(await otherSessions($)).length
     if (portrait && portrait.status === 'sleeping' && others === 0) beginWake()
     await postSession($, 'open')
@@ -150,9 +148,7 @@ export function register(on) {
       keyPath = await preferPrivate($, arg.startsWith('key ') ? arg.slice(4).trim() : arg)
       await $.store.set('sshKey', keyPath)
       warned = false
-      const id = await petIdFromKey($)
-      if (id) await rememberPet($, id)
-      return { text: id ? 'omn ' + id : 'omn key ' + keyPath }
+      return { text: 'omn key ' + keyPath }
     }
     return { text: usageText }
   })
@@ -508,9 +504,9 @@ async function finishWake($) {
 }
 
 // A pet id from the server is stored and put in a URL path, so only the
-// 8-character id shape is kept. Anything else becomes ''.
+// server's shape (8 lowercase base32 chars, a-z2-7) is kept. Anything else becomes ''.
 export function petIdOf(v) {
-  return typeof v === 'string' && /^[A-Za-z0-9_-]{8}$/.test(v) ? v : ''
+  return typeof v === 'string' && /^[a-z2-7]{8}$/.test(v) ? v : ''
 }
 
 async function rememberPet($, id) {
@@ -1660,19 +1656,6 @@ function nonceOf(id) {
   const s = raw.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 120)
   if (s.length > 0) return s
   return 't' + Date.now().toString(36)
-}
-
-async function petIdFromKey($) {
-  const key = await resolveKey($)
-  if (!key) return ''
-  // A .pub next to the key fingerprints without the passphrase.
-  const pair = keyPair(key)
-  const target = (await exists($, pair.pub)) ? pair.pub : key
-  const run = await $.process.run(['ssh-keygen', '-lf', target])
-  if (!run || run.exitCode !== 0) return ''
-  const found = String(run.stdout || '').match(/SHA256:([A-Za-z0-9+/]+)/)
-  if (!found) return ''
-  return found[1].slice(0, 8).replaceAll('+', '-').replaceAll('/', '_')
 }
 
 function keyPair(key) {
