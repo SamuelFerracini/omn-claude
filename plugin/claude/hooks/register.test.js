@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { handleStatus, petIdOf, identityFilesOf, firstKeyOf } from './register.js'
+import { handleStatus, petIdOf, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, beginWake, gleamSpots, resetPortraitState } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -81,4 +81,58 @@ test('firstKeyOf picks the first existing key, .pub counts', async () => {
   const has = async (p) => present.has(p)
   assert.equal(await firstKeyOf(['/h/a', '/h/b', '/h/c'], has), '/h/b')
   assert.equal(await firstKeyOf(['/h/a'], has), '')
+})
+
+function endRevive(live, growth) {
+  resetPortraitState()
+  __state({ portrait: { growth: 0 }, reviveTo: live, reviveGrowth: growth, reviveLeft: 1 })
+  tickRevive({})
+}
+
+test('revive ending on a gleam pet plays the gleam, then clears', () => {
+  endRevive({ gleam: true, growth: 0, frames: [1] }, 0)
+  let st = __state()
+  assert.equal(st.reviveLeft, 0)
+  assert.equal(st.gleamLeft, 14)
+  assert.equal(st.evolveLeft, 0)
+  for (let i = 0; i < 14; i++) tickGleam()
+  st = __state()
+  assert.equal(st.gleamLeft, 0)
+  assert.equal(st.evolveLeft, 0)
+})
+
+test('revive on a pet without gleam skips the gleam', () => {
+  endRevive({ gleam: false, growth: 0, frames: [1] }, 0)
+  assert.equal(__state().gleamLeft, 0)
+})
+
+test('gleam runs before a queued evolve', () => {
+  endRevive({ gleam: true, growth: 600, frames: [1] }, 0)
+  let st = __state()
+  assert.equal(st.gleamLeft, 14)
+  assert.equal(st.evolveLeft, 0)
+  for (let i = 0; i < 14; i++) tickGleam()
+  st = __state()
+  assert.equal(st.gleamLeft, 0)
+  assert.equal(st.evolveLeft, 50)
+})
+
+test('a non-gleam revive still evolves right away', () => {
+  endRevive({ gleam: false, growth: 600, frames: [1] }, 0)
+  assert.equal(__state().evolveLeft, 50)
+})
+
+test('wake cancels the gleam and its queued evolve', () => {
+  endRevive({ gleam: true, growth: 600, frames: [1] }, 0)
+  beginWake()
+  const st = __state()
+  assert.equal(st.gleamLeft, 0)
+  assert.equal(st.gleamEvolve, false)
+})
+
+test('gleamSpots stay inside the 16x18 grid and thin out', () => {
+  for (let left = 14; left > 0; left--) {
+    for (const s of gleamSpots(left)) assert.ok(s[0] >= 0 && s[0] < 16 && s[1] >= 0 && s[1] < 18)
+  }
+  assert.ok(gleamSpots(14).length > gleamSpots(1).length)
 })

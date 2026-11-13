@@ -33,6 +33,9 @@ const reviveStill = 8
 const reviveGlow = 10
 const reviveFlash = 3
 const reviveRise = 16
+let gleamLeft = 0
+let gleamEvolve = false
+const gleamTicks = 14
 let arriveFrom = null
 let arriveTo = null
 let arriveLeft = 0
@@ -118,6 +121,7 @@ export function register(on) {
     reviveFrom = null
     reviveTo = null
     reviveGrowth = null
+    clearGleam()
     clearArrive()
     note = ''
     noteLeft = 0
@@ -262,6 +266,7 @@ async function holdSession($, open) {
 
 function beginWake() {
   if (arriveLeft > 0) return
+  clearGleam()
   wakeFrom = portrait
   wakeLeft = wakeStill + wakeStir
 }
@@ -293,6 +298,8 @@ function stepFrame($) {
     if (wakeLeft === 0) finishWake($)
   } else if (reviveLeft > 0) {
     tickRevive($)
+  } else if (gleamLeft > 0) {
+    tickGleam()
   } else if (arriveLeft > 0) {
     tickArrive($)
   } else if (evolveLeft > 0) {
@@ -316,7 +323,7 @@ function stepFrame($) {
 }
 
 function busy() {
-  return wakeLeft > 0 || reviveLeft > 0 || arriveLeft > 0 || evolveLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0
+  return wakeLeft > 0 || reviveLeft > 0 || arriveLeft > 0 || evolveLeft > 0 || gleamLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0
 }
 
 function petDead() {
@@ -336,6 +343,7 @@ function revivePhase() {
 // evolve in progress. tickRevive plays the evolve afterwards if the stage went up.
 async function beginRevive($, growth) {
   if (reviveLeft > 0) return
+  clearGleam()
   cancelArrive()
   wakeLeft = 0
   wakeFrom = null
@@ -381,12 +389,48 @@ function tickRevive($) {
   reviveFrom = null
   reviveTo = null
   reviveGrowth = null
-  if (grew) {
-    // The old live form is not on hand, so the evolve plays its burst and note without the flip.
-    evolveLeft = evolveTicks
-    burst()
-  } else if (missed) refresh($).catch(() => {})
+  if (!missed && portrait && portrait.gleam === true) {
+    // Revive, then gleam, then the queued evolve.
+    gleamLeft = gleamTicks
+    gleamEvolve = grew
+    return
+  }
+  if (grew) startRevivedEvolve()
+  else if (missed) refresh($).catch(() => {})
 }
+
+// The old live form is not on hand, so the evolve plays its burst and note without the flip.
+function startRevivedEvolve() {
+  evolveLeft = evolveTicks
+  burst()
+}
+
+function clearGleam() {
+  gleamLeft = 0
+  gleamEvolve = false
+}
+
+function tickGleam() {
+  gleamLeft--
+  if (gleamLeft > 0) return
+  const evolve = gleamEvolve
+  clearGleam()
+  if (evolve) startRevivedEvolve()
+}
+
+// Test hook: read or patch the animation counters.
+export function __state(patch) {
+  if (patch) {
+    if ('portrait' in patch) portrait = patch.portrait
+    if ('reviveLeft' in patch) reviveLeft = patch.reviveLeft
+    if ('reviveTo' in patch) reviveTo = patch.reviveTo
+    if ('reviveGrowth' in patch) reviveGrowth = patch.reviveGrowth
+    if ('gleamLeft' in patch) gleamLeft = patch.gleamLeft
+    if ('evolveLeft' in patch) evolveLeft = patch.evolveLeft
+  }
+  return { reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait }
+}
+export { tickRevive, tickGleam, beginWake, gleamSpots, resetPortraitState }
 
 function arrivePhase() {
   return arriveStep()[0]
@@ -424,6 +468,7 @@ function cancelArrive() {
 // the leave phase ends, so the meter and name match what is on screen.
 function beginArrive(old, name) {
   if (reviveLeft > 0 || !old || !old.frames || !old.frames.length || !portrait || portrait === old) return
+  clearGleam()
   wakeLeft = 0
   wakeFrom = null
   evolveLeft = 0
@@ -842,6 +887,7 @@ function present(b64) {
   paintSpark(buf)
   paintSleep(buf)
   if (reviveLeft > 0) reviveFx(buf)
+  if (gleamLeft > 0) gleamFx(buf)
   if (arriveLeft > 0) arriveFx(buf)
   return buf
 }
@@ -992,6 +1038,25 @@ function sparkle(buf) {
     const s = reviveSpots[(tick + i * 3) % reviveSpots.length]
     paint(buf, s[0], s[1], i % 2 === 0 ? [0xf5, 0xd4, 0x4a] : [0xff, 0xff, 0xff])
   }
+}
+
+// Star spots for one gleam frame: [x, y, rgb]. They sweep left to right
+// across the portrait, gold and white alternating, then thin out.
+function gleamSpots(left) {
+  const t = gleamTicks - left
+  const n = left <= 3 ? 1 : left <= 6 ? 2 : 4
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const s = reviveSpots[(t + i * 3) % reviveSpots.length]
+    out.push([s[0], s[1], (t + i) % 2 === 0 ? [0xf5, 0xd4, 0x4a] : [0xff, 0xff, 0xff]])
+  }
+  return out
+}
+
+function gleamFx(buf) {
+  // One soft shine pulse mid-way, then the stars.
+  if (gleamLeft === gleamTicks >> 1) wash(buf, rgb(buf, 0))
+  for (const s of gleamSpots(gleamLeft)) paint(buf, s[0], s[1], s[2])
 }
 
 function bitePose(b, m) {
@@ -1487,6 +1552,7 @@ function resetPortraitState() {
   reviveFrom = null
   reviveTo = null
   reviveGrowth = null
+  clearGleam()
   clearArrive()
   note = ''
   noteLeft = 0
