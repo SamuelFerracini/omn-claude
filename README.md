@@ -14,4 +14,4 @@ The pet is found automatically from the SSH key `ssh omn.sh` uses: the `Identity
 
 - `/omn` shows your pet. `/omn key <path>` sets the SSH key.
 - `/omn-name <nick>` renames your pet (`a-z A-Z 0-9 _ -`, 1 to 12 characters).
-- `/omn-letgo` warns first. Run `/omn-letgo confirm` within 60s to send the pet to the graveyard and hatch a new egg. It cannot be undone.
+- `/omn-release` warns first. Run `/omn-release confirm` within 60s to send the pet to the graveyard and hatch a new egg. It cannot be undone.
