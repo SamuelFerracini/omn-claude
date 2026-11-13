@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { handleStatus, petIdOf, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, beginWake, gleamSpots, resetPortraitState } from './register.js'
+import { handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, beginWake, gleamSpots, resetPortraitState } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -137,4 +137,19 @@ test('gleamSpots stay inside the 16x18 grid and thin out', () => {
     for (const s of gleamSpots(left)) assert.ok(s[0] >= 0 && s[0] < 16 && s[1] >= 0 && s[1] < 18)
   }
   assert.ok(gleamSpots(14).length > gleamSpots(1).length)
+})
+
+test('sessionPetId returns a new valid id from the reply', () => {
+  assert.equal(sessionPetId('{"ok":true,"status":"awake","id":"ab3xy7qz"}', 'zzzzzzzz'), 'ab3xy7qz')
+  assert.equal(sessionPetId('{"id":"ab3xy7qz"}', ''), 'ab3xy7qz')
+})
+
+test('sessionPetId changes nothing when id is same, missing, invalid or reply is not JSON', () => {
+  assert.equal(sessionPetId('{"id":"ab3xy7qz"}', 'ab3xy7qz'), '')
+  assert.equal(sessionPetId('{"ok":true,"status":"awake"}', 'ab3xy7qz'), '')
+  assert.equal(sessionPetId('{"id":"../x?y=1"}', 'ab3xy7qz'), '')
+  assert.equal(sessionPetId('{"id":12345678}', ''), '')
+  assert.equal(sessionPetId('not json', 'ab3xy7qz'), '')
+  assert.equal(sessionPetId(undefined, ''), '')
+  assert.equal(sessionPetId('null', ''), '')
 })

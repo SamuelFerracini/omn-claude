@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.24'
+const VERSION = '0.4.25'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -148,7 +148,12 @@ export function register(on) {
       keyPath = await preferPrivate($, arg.startsWith('key ') ? arg.slice(4).trim() : arg)
       await $.store.set('sshKey', keyPath)
       warned = false
-      return { text: 'omn key ' + keyPath }
+      // The old key's pet must not stay on screen. The reply of open brings the new key's pet.
+      petId = ''
+      portrait = null
+      await $.store.set('petId', '')
+      await postSession($, 'open')
+      return { text: 'omn key ' + keyPath + (petId ? ' (' + petId + ')' : '') }
     }
     return { text: usageText }
   })
@@ -1432,6 +1437,16 @@ function canonical(pubkey, ts, nonce, deltas) {
   return s + ']}'
 }
 
+// Returns the pet id in a session reply when it is valid and differs from current, else ''. Never throws.
+export function sessionPetId(text, current) {
+  try {
+    const id = petIdOf(JSON.parse(text).id)
+    return id && id !== current ? id : ''
+  } catch (err) {
+    return ''
+  }
+}
+
 async function postSession($, op) {
   const nonce = sessionNonce()
   try {
@@ -1451,6 +1466,11 @@ async function postSession($, op) {
     if (res.status === 401) return
     if (await handleStatus($, res)) return
     if (!res.ok) throw new Error('omn ' + res.status)
+    if (op !== 'close') {
+      // The signed key decides the pet. A reply id that differs is the key's real pet.
+      const id = sessionPetId(res.text, petId)
+      if (id) await rememberPet($, id)
+    }
   } catch (err) {
     if (op === 'open') $.ui.log('omn stay-awake skipped: ' + (err && err.message ? err.message : 'sign'))
   }

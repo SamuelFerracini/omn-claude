@@ -42,12 +42,12 @@ The plugin always shows the pet of the current SSH key, from the moment the sess
 
 ## Done when
 
-- [ ] A session open with a different key's id in the reply switches the shown pet without waiting for an xp turn.
+- [x] A session open with a different key's id in the reply switches the shown pet without waiting for an xp turn.
 
-- [ ] `/omn key` stops showing the old pet and loads the new key's pet.
+- [x] `/omn key` stops showing the old pet and loads the new key's pet.
 
-- [ ] A reply without `id` changes nothing.
+- [x] A reply without `id` changes nothing.
 
-- [ ] The tests pass (`node --test plugin/claude/hooks/`).
+- [x] The tests pass (`node --test plugin/claude/hooks/`).
 
-- [ ] The work is committed on the branch.
+- [x] The work is committed on the branch.
