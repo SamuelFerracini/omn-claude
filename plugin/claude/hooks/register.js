@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.26'
+const VERSION = '0.4.27'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -41,6 +41,11 @@ let arriveFrom = null
 let arriveTo = null
 let arriveLeft = 0
 let arriveName = ''
+let arrivePrompt = false
+// The pane line that asks for a nick. Set once when a hatch or release scene
+// ends on a pet with the default nick. A successful /omn-name clears it.
+let namePrompt = ''
+const namePromptText = 'name your pet: /omn-name <nick>'
 const arriveSpans = [
   ['leave', 10],
   ['drop', 10],
@@ -124,6 +129,7 @@ export function register(on) {
     clearArrive()
     note = ''
     noteLeft = 0
+    namePrompt = ''
     bits = []
     bites = []
     bite = null
@@ -443,10 +449,12 @@ export function __state(patch) {
     if ('reviveGrowth' in patch) reviveGrowth = patch.reviveGrowth
     if ('gleamLeft' in patch) gleamLeft = patch.gleamLeft
     if ('evolveLeft' in patch) evolveLeft = patch.evolveLeft
+    if ('petId' in patch) petId = patch.petId
+    if ('keyPath' in patch) keyPath = patch.keyPath
   }
-  return { reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait }
+  return { reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait, petId, arriveLeft, arriveFrom, arriveTo, arrivePhase: arriveLeft > 0 ? arrivePhase() : '', note, namePrompt }
 }
-export { tickRevive, tickGleam, beginWake, gleamSpots, resetPortraitState }
+export { tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand }
 
 function arrivePhase() {
   return arriveStep()[0]
@@ -467,6 +475,7 @@ function clearArrive() {
   arriveFrom = null
   arriveTo = null
   arriveName = ''
+  arrivePrompt = false
 }
 
 // cancelArrive stops the scene early and shows the new pet, so a revive or a
@@ -478,12 +487,33 @@ function cancelArrive() {
 }
 
 // beginArrive runs after a release once the new egg's frames are loaded. The old
-// pet floats up and fades, the egg drops in with a bounce, wobbles faster and
-// cracks, then a flash ends on the stage-0 portrait with a "hatched!" note.
-// It cancels a wake or evolve in progress. portrait holds the old pet until
-// the leave phase ends, so the meter and name match what is on screen.
-function beginArrive(old, name) {
-  if (reviveLeft > 0 || !old || !old.frames || !old.frames.length || !portrait || portrait === old) return
+// pet says "goodbye!", floats up and fades, the egg drops in with a bounce,
+// wobbles faster and cracks, then a flash ends on the stage-0 portrait with a
+// "hatched!" note. It cancels a wake or evolve in progress. portrait holds the
+// old pet until the leave phase ends, so the meter and name match what is on
+// screen. prompt asks for a nick when the scene ends. Returns false when the
+// scene cannot start.
+function beginArrive(old, name, prompt) {
+  if (reviveLeft > 0 || !old || !old.frames || !old.frames.length || !portrait || portrait === old) return false
+  startScene(name, prompt)
+  arriveFrom = old
+  portrait = old
+  arriveLeft = arriveTotal
+  note = 'goodbye!'
+  return true
+}
+
+// beginHatch is the first hatch: there is no old pet, so the scene skips the
+// leave phase and starts with the egg dropping in. portrait must already hold
+// the new egg's frames. Returns false when the scene cannot start.
+function beginHatch(name, prompt) {
+  if (reviveLeft > 0 || !portrait || !portrait.frames || !portrait.frames.length) return false
+  startScene(name, prompt)
+  arriveLeft = arriveTotal - arriveSpans[0][1]
+  return true
+}
+
+function startScene(name, prompt) {
   clearGleam()
   wakeLeft = 0
   wakeFrom = null
@@ -492,25 +522,36 @@ function beginArrive(old, name) {
   bits = []
   idleHop = 0
   bite = null
-  arriveFrom = old
+  arriveFrom = null
   arriveTo = portrait
   arriveName = name
-  portrait = old
-  arriveLeft = arriveTotal
+  arrivePrompt = !!prompt
   note = ''
   noteLeft = 0
+  namePrompt = ''
 }
 
 function tickArrive($) {
   arriveLeft--
-  if (arriveLeft === arriveTotal - arriveSpans[0][1] && arriveTo) portrait = arriveTo
+  if (arriveLeft === arriveTotal - arriveSpans[0][1]) {
+    if (arriveTo) portrait = arriveTo
+    note = ''
+  }
   if (arriveLeft > 0) return
   if (arriveTo) portrait = arriveTo
   const name = arriveName
+  const prompt = arrivePrompt
   clearArrive()
   note = 'hatched! meet ' + name
   noteLeft = 30
   $.ui.toast('omn hatched! meet ' + name)
+  if (prompt) promptName($)
+}
+
+// Asks once for a nick: one toast, and a pane line that stays until /omn-name works.
+function promptName($) {
+  namePrompt = namePromptText
+  $.ui.toast('omn ' + namePromptText)
 }
 
 async function finishWake($) {
@@ -530,14 +571,33 @@ export function petIdOf(v) {
 }
 
 async function rememberPet($, id) {
+  // Another id is another pet. The old one's portrait and scenes must not stay on screen.
+  if (id !== petId) {
+    resetPortraitState()
+    portrait = null
+  }
   petId = id
   await $.store.set('petId', id)
   await refresh($)
 }
 
+// A stored id the server does not know (wiped DB, an old key-derived id) is
+// dropped with its portrait. The next signed open brings the key's real id.
+async function forgetPet($) {
+  petId = ''
+  portrait = null
+  await $.store.set('petId', '')
+  $.ui.invalidate('ui.render')
+}
+
 async function refresh($, growth) {
   if (wakeLeft > 0 || reviveLeft > 0 || arriveLeft > 0 || !petId) return
-  const res = await $.http.fetch(SERVER + '/p/' + petId + '.json?t=' + Date.now())
+  const asked = petId
+  const res = await $.http.fetch(SERVER + '/p/' + asked + '.json?t=' + Date.now())
+  if (res.status === 404) {
+    if (petId === asked) await forgetPet($)
+    return
+  }
   if (!res.ok) return
   const data = JSON.parse(res.text)
   if (!data.frames || !data.frames.length) return
@@ -601,6 +661,7 @@ function meterText(Box, Text, growth) {
   const care = careLine(Box, Text)
   if (care) lines.push(care)
   if (note) lines.push(Text({ color: cFed, children: [note] }))
+  if (namePrompt) lines.push(Text({ color: cFed, children: [namePrompt] }))
   lines.push(Text({ color: cFed, children: ['ssh omn.sh'] }))
   if (updateLine) lines.push(Text({ color: cWarn, children: [updateLine] }))
   if (updateLine) lines.push(Text({ color: cDim, children: ['/plugin → omn → update now'] }))
@@ -1485,10 +1546,34 @@ async function postSession($, op) {
       // The signed key decides the pet. A reply id that differs is the key's real pet.
       const id = sessionPetId(res.text, petId)
       if (id) await rememberPet($, id)
+      if (op === 'open') await openReply($, res.text)
     }
   } catch (err) {
     if (op === 'open') $.ui.log('omn stay-awake skipped: ' + (err && err.message ? err.message : 'sign'))
   }
+}
+
+// The open that adopted the key's pet says hatched:true. It plays the first
+// hatch, then asks for a nick while the server says the nick is the default.
+async function openReply($, text) {
+  let reply = null
+  try {
+    reply = JSON.parse(text)
+  } catch (err) {}
+  if (!reply || reply.hatched !== true || !petId) return
+  resetPortraitState()
+  try {
+    await refresh($)
+  } catch (err) {}
+  const name = cleanLabel(reply.name, 32) || petId
+  const prompt = reply.named === false
+  if (beginHatch(name, prompt)) {
+    $.ui.invalidate('ui.render')
+    return
+  }
+  // No frames to animate: still greet the pet and ask for a nick.
+  $.ui.toast('omn hatched! meet ' + name)
+  if (prompt) promptName($)
 }
 
 function sessionNonce() {
@@ -1538,9 +1623,11 @@ async function nameCommand($, nick) {
   if (!nickRule.test(nick)) return { text: 'usage: /omn-name <nick> (a-z A-Z 0-9 _ -, max 12)' }
   const done = await postPet($, 'name', nick)
   if (!done.pet) return { text: done.text }
+  namePrompt = ''
   try {
     await refresh($)
   } catch (err) {}
+  $.ui.invalidate('ui.render')
   return { text: 'omn named ' + nick }
 }
 
@@ -1566,11 +1653,14 @@ async function releaseConfirm($, armedAt) {
       petId = id
       await $.store.set('petId', id)
     }
+    // letgo keeps the account id, so the new egg is a fresh fetch of the same id.
     await refresh($)
   } catch (err) {}
   const name = cleanLabel(done.pet.name, 32) || id || petId
+  // A new pet has the default nick unless the server says otherwise.
+  const prompt = done.pet.named !== true
   // Only a refresh that swapped in the new egg's frames starts the scene.
-  beginArrive(old, name)
+  if (!beginArrive(old, name, prompt) && prompt) promptName($)
   $.ui.invalidate('ui.render')
   return { text: 'omn released. meet ' + name + ' (' + (id || petId) + ')' }
 }
@@ -1588,6 +1678,7 @@ function resetPortraitState() {
   clearArrive()
   note = ''
   noteLeft = 0
+  namePrompt = ''
   bits = []
   bites = []
   bite = null
@@ -1654,7 +1745,8 @@ async function post($, turnId, deltas) {
   return JSON.parse(res.text)
 }
 
-const NO_PET_HINT = 'No pet yet. Run `ssh omn.sh` to hatch it.'
+// Only an older server answers open with 404. A current one adopts a pet on open.
+const NO_PET_HINT = 'No pet yet. Start a new session or run `ssh omn.sh` to adopt one.'
 const NO_PET_FLAG = 'noPetHintShown'
 
 // Shared status handling for /v1/claude and /v1/claude/session.

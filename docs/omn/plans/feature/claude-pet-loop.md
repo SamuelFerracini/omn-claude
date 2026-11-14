@@ -86,10 +86,10 @@ The plugin runs the same loop as `ssh omn.sh`:
 
 ## Done when
 
-- [ ] All of the Goal's behavior works against the contract above.
+- [x] All of the Goal's behavior works against the contract above.
 
-- [ ] `node --test plugin/claude/hooks/` passes.
+- [x] `node --test plugin/claude/hooks/` passes.
 
-- [ ] The work is committed on this branch and not pushed.
+- [x] The work is committed on this branch and not pushed.
 
-- [ ] The final message lists the UX choices you made where the spec was unclear.
+- [x] The final message lists the UX choices you made where the spec was unclear.

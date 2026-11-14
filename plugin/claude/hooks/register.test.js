@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, beginWake, gleamSpots, resetPortraitState } from './register.js'
+import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -15,7 +15,7 @@ function fake() {
   return { $, calls, data }
 }
 
-const HINT = 'No pet yet. Run `ssh omn.sh` to hatch it.'
+const HINT = 'No pet yet. Start a new session or run `ssh omn.sh` to adopt one.'
 
 test('404 with no_pet JSON body shows the hint once', async () => {
   const { $, calls } = fake()
@@ -196,4 +196,143 @@ test('AbovePromptList: only omn row or only other rows pass through', async () =
     const e = listEvent(rows)
     assert.equal(await listHook()($ui, e, async () => 'default'), 'default')
   }
+})
+
+// A fake host that signs with a stub ssh-keygen and answers fetches from routes.
+// routes maps a URL prefix to { status, body } (body is JSON-encoded).
+function server(routes) {
+  const { $, calls, data } = fake()
+  const fetched = []
+  $.process = { run: async (args) => (args[1] === '-y' ? { exitCode: 0, stdout: 'ssh-ed25519 AAAA me' } : { exitCode: 0, stdout: '' }) }
+  $.env = { get: async () => '/h' }
+  $.fs = { exists: async () => true, write: async () => {}, read: async () => 'SIG' }
+  $.http = {
+    fetch: async (url) => {
+      fetched.push(url)
+      const path = url.replace('https://omn.sh', '').replace(/\?.*$/, '')
+      const hit = routes[path]
+      if (!hit) return { status: 500, ok: false, text: '' }
+      return { status: hit.status || 200, ok: (hit.status || 200) === 200, text: JSON.stringify(hit.body) }
+    },
+  }
+  $.ui.invalidate = () => {}
+  return { $, calls, data, fetched }
+}
+
+function freshPet(over = {}) {
+  resetPortraitState()
+  __state({ portrait: null, petId: '', keyPath: '/h/.ssh/id_ed25519', ...over })
+}
+
+function playScene($) {
+  for (let i = 0; i < 100 && __state().arriveLeft > 0; i++) tickArrive($)
+  assert.equal(__state().arriveLeft, 0)
+}
+
+const egg = { frames: [[0]], growth: 0, name: 'Pip' }
+
+test('open with hatched:true plays the egg-only hatch scene', async () => {
+  freshPet()
+  const { $, calls, data } = server({
+    '/v1/claude/session': { body: { id: 'ab3xy7qz', hatched: true, name: 'Pip', species: 'Blob', named: true } },
+    '/p/ab3xy7qz.json': { body: egg },
+  })
+  await postSession($, 'open')
+  let st = __state()
+  assert.equal(st.petId, 'ab3xy7qz')
+  assert.equal(data.get('petId'), 'ab3xy7qz')
+  assert.equal(st.arriveFrom, null)
+  assert.equal(st.arrivePhase, 'drop')
+  assert.deepEqual(st.portrait, egg)
+  playScene($)
+  st = __state()
+  assert.equal(st.note, 'hatched! meet Pip')
+  assert.deepEqual(calls.toast, ['omn hatched! meet Pip'])
+  assert.equal(st.namePrompt, '')
+})
+
+test('open with hatched:false plays no scene and asks no name', async () => {
+  freshPet()
+  const { $, calls } = server({
+    '/v1/claude/session': { body: { id: 'ab3xy7qz', hatched: false, name: 'Pip', species: 'Blob', named: false } },
+    '/p/ab3xy7qz.json': { body: egg },
+  })
+  await postSession($, 'open')
+  const st = __state()
+  assert.equal(st.arriveLeft, 0)
+  assert.equal(st.namePrompt, '')
+  assert.deepEqual(calls.toast, [])
+})
+
+test('named:false asks for a nick after the hatch, and /omn-name clears it', async () => {
+  freshPet()
+  const { $, calls } = server({
+    '/v1/claude/session': { body: { id: 'ab3xy7qz', hatched: true, name: 'Pip', species: 'Blob', named: false } },
+    '/p/ab3xy7qz.json': { body: egg },
+    '/v1/claude/pet': { body: { id: 'ab3xy7qz', name: 'Bo', species: 'Blob' } },
+  })
+  await postSession($, 'open')
+  assert.equal(__state().namePrompt, '')
+  playScene($)
+  assert.equal(__state().namePrompt, 'name your pet: /omn-name <nick>')
+  assert.deepEqual(calls.toast, ['omn hatched! meet Pip', 'omn name your pet: /omn-name <nick>'])
+  assert.deepEqual(await nameCommand($, 'Bo'), { text: 'omn named Bo' })
+  assert.equal(__state().namePrompt, '')
+})
+
+test('a 404 on /p/<id>.json clears the stored petId and portrait', async () => {
+  freshPet({ petId: 'zzzzzzzz', portrait: { frames: [[0]], growth: 9, name: 'Stale' } })
+  const { $, data } = server({ '/p/zzzzzzzz.json': { status: 404, body: { error: 'not_found' } } })
+  data.set('petId', 'zzzzzzzz')
+  await refresh($)
+  const st = __state()
+  assert.equal(st.petId, '')
+  assert.equal(st.portrait, null)
+  assert.equal(data.get('petId'), '')
+})
+
+test('the id in the open reply replaces a stale stored id', async () => {
+  freshPet({ petId: 'zzzzzzzz', portrait: { frames: [[9]], growth: 9, name: 'Stale' } })
+  const fresh = { frames: [[1]], growth: 3, name: 'Real' }
+  const { $, data, fetched } = server({
+    '/v1/claude/session': { body: { id: 'ab3xy7qz', hatched: false, name: 'Real', species: 'Blob', named: true } },
+    '/p/ab3xy7qz.json': { body: fresh },
+  })
+  data.set('petId', 'zzzzzzzz')
+  await postSession($, 'open')
+  const st = __state()
+  assert.equal(st.petId, 'ab3xy7qz')
+  assert.equal(data.get('petId'), 'ab3xy7qz')
+  assert.deepEqual(st.portrait, fresh)
+  assert.ok(!fetched.some((u) => u.includes('zzzzzzzz')))
+})
+
+test('letgo with the same id still runs the arrive scene, then asks a nick', async () => {
+  const old = { frames: [[5]], growth: 600, name: 'Old' }
+  freshPet({ petId: 'ab3xy7qz', portrait: old })
+  const newEgg = { frames: [[0]], growth: 0, name: 'Bean' }
+  const { $, calls, data } = server({
+    '/v1/claude/pet': { body: { id: 'ab3xy7qz', name: 'Bean', species: 'Blob' } },
+    '/p/ab3xy7qz.json': { body: newEgg },
+  })
+  const out = await releaseConfirm($, Date.now())
+  assert.deepEqual(out, { text: 'omn released. meet Bean (ab3xy7qz)' })
+  let st = __state()
+  assert.equal(st.petId, 'ab3xy7qz')
+  assert.equal(data.get('petId'), undefined)
+  assert.equal(st.arrivePhase, 'leave')
+  assert.equal(st.arriveFrom, old)
+  assert.deepEqual(st.arriveTo, newEgg)
+  assert.equal(st.portrait, old)
+  assert.equal(st.note, 'goodbye!')
+  for (let i = 0; i < 10; i++) tickArrive($)
+  st = __state()
+  assert.equal(st.arrivePhase, 'drop')
+  assert.deepEqual(st.portrait, newEgg)
+  assert.equal(st.note, '')
+  playScene($)
+  st = __state()
+  assert.equal(st.note, 'hatched! meet Bean')
+  assert.equal(st.namePrompt, 'name your pet: /omn-name <nick>')
+  assert.deepEqual(calls.toast, ['omn hatched! meet Bean', 'omn name your pet: /omn-name <nick>'])
 })
