@@ -779,12 +779,12 @@ function unit(n, div, suffix) {
   return frac === 0 ? whole + suffix : whole + '.' + frac + suffix
 }
 
-// OMN_PET_RENDER=compact|blocks|halfblock forces the mode (SSH from a Mac forwards no TERM_PROGRAM).
+// OMN_PET_RENDER=image|compact|blocks|halfblock forces the mode (SSH from a Mac forwards no TERM_PROGRAM).
 // Else Terminal.app gets blocks. tmux hides TERM_PROGRAM, so the bundle id counts too.
 export function renderModeOf(env) {
   const e = env || {}
   const forced = String(e.override || '').trim().toLowerCase()
-  if (forced === 'blocks' || forced === 'compact' || forced === 'halfblock') return forced
+  if (forced === 'blocks' || forced === 'compact' || forced === 'halfblock' || forced === 'image') return forced
   if (e.termProgram === 'Apple_Terminal' || e.bundleId === 'com.apple.Terminal') return 'blocks'
   return 'halfblock'
 }
@@ -849,6 +849,24 @@ export function nearest256(c) {
   return xtermPalette[best]
 }
 
+function mix(a, b) {
+  const ch = (sh) => (((a >> sh) & 255) + ((b >> sh) & 255) + 1) >> 1
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0)
+}
+
+// RGBA bytes of the 16x18 sprite, for the host's Image element.
+export function rgbaOf(b64) {
+  const raw = present(b64)
+  const out = new Uint8Array(16 * 18 * 4)
+  for (let i = 0; i < 16 * 18; i++) {
+    out[i * 4] = raw[i * 3] || 0
+    out[i * 4 + 1] = raw[i * 3 + 1] || 0
+    out[i * 4 + 2] = raw[i * 3 + 2] || 0
+    out[i * 4 + 3] = 255
+  }
+  return bytesB64(out)
+}
+
 function truecolorOn() {
   const t = String(renderEnv.colorterm || '').toLowerCase()
   return t === 'truecolor' || t === '24bit'
@@ -857,14 +875,16 @@ function truecolorOn() {
 function petTree($, e) {
   if (!portrait || !portrait.frames || !portrait.frames.length) return null
   lastSurface = e.surface || 'terminal'
-  const { Box, Text, Raster, Svg } = $.ui.resolve(e)
+  const { Box, Text, Raster, Svg, Image } = $.ui.resolve(e)
   if (e.plugin) ownPlugin = e.plugin
   const src = shownPortrait()
   const frame = src.frames[tick % src.frames.length]
   const mode = renderMode()
   const picture =
-    lastSurface === 'terminal'
-      ? Raster({ key: 'pet', columns: mode === 'blocks' ? 32 : 16, rows: mode === 'blocks' ? 18 : 9, cells: rasterOf(frame, mode) })
+    lastSurface === 'terminal' && mode === 'image' && Image
+      ? Image({ key: 'pet', source: { rgba: rgbaOf(frame), width: 16, height: 18 }, columns: 16, rows: 9, alt: ' ' })
+      : lastSurface === 'terminal'
+      ? Raster({ key: 'pet', columns: mode === 'blocks' ? 32 : 16, rows: mode === 'blocks' ? 18 : 9, cells: rasterOf(frame, mode === 'image' ? 'halfblock' : mode) })
       : Svg({ children: svgOf(frame) })
   return Box({ flexDirection: 'row', columnGap: 2, children: [picture, meterText(Box, Text, (wakeFrom || portrait).growth)] })
 }
@@ -876,14 +896,14 @@ export function rasterOf(b64, mode) {
   const m = mode || renderMode()
   if (m === 'compact') {
     // Same 16x9 footprint as halfblock. Each pair of pixel rows keeps one cell:
-    // the top pixel, or the bottom one when the top is the sprite's background.
+    // the one pixel that is not background, or the average when both are sprite.
     const bg = rgb(raw, 0)
     const snap = truecolorOn() ? (c) => c : nearest256
     for (let y = 0; y < 9; y++) {
       for (let x = 0; x < cols; x++) {
         const top = rgb(raw, ((2 * y) * cols + x) * 3)
         const bot = rgb(raw, ((2 * y + 1) * cols + x) * 3)
-        nums.push(0x20, 0x01000000, snap(top !== bg ? top : bot))
+        nums.push(0x20, 0x01000000, snap(top === bg ? bot : bot === bg ? top : mix(top, bot)))
       }
     }
     return bytesB64(new Uint8Array(Uint32Array.from(nums).buffer))
