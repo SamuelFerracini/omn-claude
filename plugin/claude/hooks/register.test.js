@@ -364,15 +364,15 @@ test('render mode: halfblock unless Terminal.app or forced', () => {
   assert.equal(renderModeOf({}), 'halfblock')
   assert.equal(renderModeOf(undefined), 'halfblock')
   assert.equal(renderModeOf({ termProgram: 'iTerm.app' }), 'halfblock')
-  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'compact')
-  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'compact')
+  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'blocks')
+  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'blocks')
   assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.googlecode.iterm2' }), 'halfblock')
 })
 
 test('render mode: OMN_PET_RENDER wins both ways', () => {
   assert.equal(renderModeOf({ override: 'blocks' }), 'blocks')
   assert.equal(renderModeOf({ override: 'halfblock', termProgram: 'Apple_Terminal' }), 'halfblock')
-  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'compact')
+  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'blocks')
   assert.equal(renderModeOf({ override: 'compact' }), 'compact')
 })
 
@@ -425,7 +425,7 @@ test('compact output is a 16x9 bg-only grid keeping the non-background pixel', (
   at(3, 4, [200, 100, 50]) // top of pair 2
   at(5, 7, [0, 255, 0]) // bottom of pair 3, top is bg
   const b64 = Buffer.from(Uint8Array.from(px)).toString('base64')
-  setRenderEnv({ termProgram: 'Apple_Terminal', colorterm: '24bit' })
+  setRenderEnv({ override: 'compact', colorterm: '24bit' })
   const cells = cellsOf(rasterOf(b64))
   setRenderEnv({})
   assert.equal(cells.length, 16 * 9 * 3)

@@ -785,7 +785,7 @@ export function renderModeOf(env) {
   const e = env || {}
   const forced = String(e.override || '').trim().toLowerCase()
   if (forced === 'blocks' || forced === 'compact' || forced === 'halfblock') return forced
-  if (e.termProgram === 'Apple_Terminal' || e.bundleId === 'com.apple.Terminal') return 'compact'
+  if (e.termProgram === 'Apple_Terminal' || e.bundleId === 'com.apple.Terminal') return 'blocks'
   return 'halfblock'
 }
 
