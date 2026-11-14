@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.25'
+const VERSION = '0.4.26'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -17,6 +17,7 @@ let petId = ''
 let warned = false
 let tick = 0
 let lastSurface = 'terminal'
+let ownPlugin = 'omn'
 let portrait = null
 let wakeFrom = null
 let wakeLeft = 0
@@ -176,19 +177,33 @@ export function register(on) {
     if (!portrait || !portrait.frames || !portrait.frames.length) return next(e)
     lastSurface = e.surface || 'terminal'
     const { Box, Text, Raster, Svg } = $.ui.resolve(e)
-    const theirs = await next(e)
+    if (e.plugin) ownPlugin = e.plugin
     const src = shownPortrait()
     const frame = src.frames[tick % src.frames.length]
     const picture =
       lastSurface === 'terminal'
         ? Raster({ key: 'pet', columns: 16, rows: 9, cells: rasterOf(frame) })
         : Svg({ children: svgOf(frame) })
-    const pet = Box({ flexDirection: 'row', columnGap: 2, children: [picture, meterText(Box, Text, (wakeFrom || portrait).growth)] })
-    const lines = [pet]
-    if (theirs) lines.push(Box({ flexGrow: 1, flexShrink: 1, children: [theirs] }))
-    const cols = (e.props && e.props.bodyColumns) || 0
-    const wide = cols >= wideBandColumns
-    return Box({ flexDirection: wide ? 'row' : 'column', columnGap: 2, children: lines })
+    return Box({ flexDirection: 'row', columnGap: 2, children: [picture, meterText(Box, Text, (wakeFrom || portrait).growth)] })
+  })
+
+  // The engine asks AbovePrompt once per plugin, so only the list sees every row.
+  // next runs once (a second call fails validate): it gets the other rows, and
+  // its answer sits beside omn's own row.
+  on('ui.render', { component: 'AbovePromptList' }, async ($, e, next) => {
+    const p = e.props || {}
+    const rows = p.rows || []
+    const mine = rows.filter((r) => r.plugin === ownPlugin)
+    const others = rows.filter((r) => r.plugin !== ownPlugin)
+    const wide = (p.bodyColumns || 0) >= wideBandColumns
+    if (!wide || p.isCollapsed || p.hasSurvey || !mine.length || !others.length) return next(e)
+    const { Box } = $.ui.resolve(e)
+    const right = await next({ ...e, props: { ...p, rows: others } })
+    return Box({
+      flexDirection: 'row',
+      columnGap: 2,
+      children: [...mine.map((r) => r.tree), Box({ flexGrow: 1, flexShrink: 1, children: [right] })],
+    })
   })
 
   on('turn.step', async function* ($, e, next) {
