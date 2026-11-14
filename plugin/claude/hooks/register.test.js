@@ -172,12 +172,24 @@ function listEvent(rows, over = {}) {
   return { props: { rows, bodyColumns: 100, isCollapsed: false, hasSurvey: false, ...over } }
 }
 
-test('AbovePromptList: wide with other rows puts the pet left, others right', async () => {
+test('AbovePromptList: wide with other rows draws the pet left, others right', async () => {
+  const sprite = Buffer.from(new Uint8Array(16 * 18 * 3)).toString('base64')
+  resetPortraitState()
+  __state({ portrait: { frames: [sprite], growth: 5, name: 'Pip' } })
+  const el = (type) => (props) => ({ type, props })
+  const $r = { ui: { resolve: () => ({ Box: el('box'), Text: el('text'), Raster: el('raster'), Svg: el('svg') }) } }
   const seen = []
   const next = async (ev) => (seen.push(ev.props.rows), 'stacked others')
-  const out = await listHook()($ui, listEvent([mineRow, theirRow]), next)
+  const out = await listHook()($r, { ...listEvent([mineRow, theirRow]), surface: 'terminal' }, next)
   assert.deepEqual(seen, [[theirRow]])
-  assert.deepEqual(out, box({ flexDirection: 'row', columnGap: 2, children: ['pet', box({ flexGrow: 1, flexShrink: 1, children: ['stacked others'] })] }))
+  assert.equal(out.type, 'box')
+  assert.equal(out.props.flexDirection, 'row')
+  const [pet, right] = out.props.children
+  // the pet is drawn here, not copied from the row
+  assert.equal(pet.props.children[0].type, 'raster')
+  assert.equal(pet.props.children[0].props.key, 'pet')
+  assert.deepEqual(right, { type: 'box', props: { flexGrow: 1, flexShrink: 1, children: ['stacked others'] } })
+  resetPortraitState()
 })
 
 test('AbovePromptList: narrow band passes through', async () => {
