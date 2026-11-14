@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
 import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand } from './register.js'
 
@@ -335,4 +336,70 @@ test('letgo with the same id still runs the arrive scene, then asks a nick', asy
   assert.equal(st.note, 'hatched! meet Bean')
   assert.equal(st.namePrompt, 'name your pet: /omn-name <nick>')
   assert.deepEqual(calls.toast, ['omn hatched! meet Bean', 'omn name your pet: /omn-name <nick>'])
+})
+
+// ---- Terminal.app render mode ----
+import { renderModeOf, nearest256, rasterOf, setRenderEnv } from './register.js'
+
+const spriteB64 = (() => {
+  const px = []
+  for (let i = 0; i < 16 * 18; i++) px.push((i * 37) & 255, (i * 91) & 255, (i * 53) & 255)
+  return Buffer.from(Uint8Array.from(px)).toString('base64')
+})()
+const cellsOf = (b64) => Array.from(new Uint32Array(Uint8Array.from(Buffer.from(b64, 'base64')).buffer))
+
+test('render mode: halfblock unless Terminal.app or forced', () => {
+  assert.equal(renderModeOf({}), 'halfblock')
+  assert.equal(renderModeOf(undefined), 'halfblock')
+  assert.equal(renderModeOf({ termProgram: 'iTerm.app' }), 'halfblock')
+  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'blocks')
+  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'blocks')
+  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.googlecode.iterm2' }), 'halfblock')
+})
+
+test('render mode: OMN_PET_RENDER wins both ways', () => {
+  assert.equal(renderModeOf({ override: 'blocks' }), 'blocks')
+  assert.equal(renderModeOf({ override: 'halfblock', termProgram: 'Apple_Terminal' }), 'halfblock')
+  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'blocks')
+})
+
+test('halfblock output is byte-identical to the pre-change output', () => {
+  const golden = '5ff56681bd8a6b7ba51e8ec40c363b7046396b20'
+  for (const env of [{}, { termProgram: 'iTerm.app' }, { override: 'halfblock', termProgram: 'Apple_Terminal' }]) {
+    setRenderEnv(env)
+    assert.equal(createHash('sha1').update(rasterOf(spriteB64)).digest('hex'), golden)
+  }
+  setRenderEnv({})
+})
+
+test('blocks output is a 32x18 grid of spaces with bg only', () => {
+  setRenderEnv({ termProgram: 'Apple_Terminal', colorterm: 'truecolor' })
+  const cells = cellsOf(rasterOf(spriteB64))
+  setRenderEnv({})
+  assert.equal(cells.length, 32 * 18 * 3)
+  for (let i = 0; i < cells.length; i += 3) {
+    assert.equal(cells[i], 0x20)
+    assert.equal(cells[i + 1], 0x01000000)
+  }
+  // pixel (x=1,y=0) fills cells 2 and 3 of row 0 with its own colour
+  assert.equal(cells[2 * 3 + 2], cells[3 * 3 + 2])
+  assert.equal(cells[2 * 3 + 2], (((1 * 37) & 255) << 16) | (((1 * 91) & 255) << 8) | ((1 * 53) & 255))
+})
+
+test('blocks without truecolor snaps every colour to xterm-256', () => {
+  setRenderEnv({ override: 'blocks' })
+  const cells = cellsOf(rasterOf(spriteB64))
+  setRenderEnv({})
+  for (let i = 2; i < cells.length; i += 3) assert.equal(nearest256(cells[i]), cells[i])
+})
+
+test('nearest256 maps known colours', () => {
+  assert.equal(nearest256(0x000000), 0x000000)
+  assert.equal(nearest256(0xffffff), 0xffffff)
+  assert.equal(nearest256(0xff0000), 0xff0000)
+  assert.equal(nearest256(0x5f87d7), 0x5f87d7)
+  assert.equal(nearest256(0x808080), 0x808080)
+  assert.equal(nearest256(0xfe0101), 0xff0000)
+  assert.equal(nearest256(0x0a0a0a), 0x080808)
+  assert.equal(nearest256(0x101010), 0x121212)
 })
