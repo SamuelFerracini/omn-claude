@@ -46,10 +46,10 @@ At `bodyColumns >= wideBandColumns`, when omn's row and at least one other plugi
 
 ## Done when
 
-- [ ] Wide band with another plugin's row: pet left, other rows to its right, in one row.
+- [x] Wide band with another plugin's row: pet left, other rows to its right, in one row.
 
-- [ ] Narrow band or no other rows: same output as the engine's default stacking.
+- [x] Narrow band or no other rows: same output as the engine's default stacking.
 
-- [ ] `AbovePrompt` hook no longer uses `next(e)` output as "other plugins".
+- [x] `AbovePrompt` hook no longer uses `next(e)` output as "other plugins".
 
-- [ ] `claude plugin validate plugin/claude` passes; tests pass.
+- [x] `claude plugin validate plugin/claude` passes; tests pass.

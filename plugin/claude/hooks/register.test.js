@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, beginWake, gleamSpots, resetPortraitState } from './register.js'
+import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, beginWake, gleamSpots, resetPortraitState } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -152,4 +152,48 @@ test('sessionPetId changes nothing when id is same, missing, invalid or reply is
   assert.equal(sessionPetId('not json', 'ab3xy7qz'), '')
   assert.equal(sessionPetId(undefined, ''), '')
   assert.equal(sessionPetId('null', ''), '')
+})
+
+function listHook() {
+  let hook
+  register((event, matcher, fn) => {
+    if (event === 'ui.render' && matcher && matcher.component === 'AbovePromptList') hook = fn
+  })
+  return hook
+}
+
+const box = (props) => ({ box: props })
+const $ui = { ui: { resolve: () => ({ Box: box }) } }
+const mineRow = { plugin: 'omn', tree: 'pet' }
+const theirRow = { plugin: 'status', tree: 'status row' }
+
+function listEvent(rows, over = {}) {
+  return { props: { rows, bodyColumns: 100, isCollapsed: false, hasSurvey: false, ...over } }
+}
+
+test('AbovePromptList: wide with other rows puts the pet left, others right', async () => {
+  const seen = []
+  const next = async (ev) => (seen.push(ev.props.rows), 'stacked others')
+  const out = await listHook()($ui, listEvent([mineRow, theirRow]), next)
+  assert.deepEqual(seen, [[theirRow]])
+  assert.deepEqual(out, box({ flexDirection: 'row', columnGap: 2, children: ['pet', box({ flexGrow: 1, flexShrink: 1, children: ['stacked others'] })] }))
+})
+
+test('AbovePromptList: narrow band passes through', async () => {
+  const e = listEvent([mineRow, theirRow], { bodyColumns: 59 })
+  assert.equal(await listHook()($ui, e, async (ev) => (assert.equal(ev, e), 'default')), 'default')
+})
+
+test('AbovePromptList: collapsed band and survey pass through', async () => {
+  for (const over of [{ isCollapsed: true }, { hasSurvey: true }]) {
+    const e = listEvent([mineRow, theirRow], over)
+    assert.equal(await listHook()($ui, e, async () => 'default'), 'default')
+  }
+})
+
+test('AbovePromptList: only omn row or only other rows pass through', async () => {
+  for (const rows of [[mineRow], [theirRow], []]) {
+    const e = listEvent(rows)
+    assert.equal(await listHook()($ui, e, async () => 'default'), 'default')
+  }
 })
