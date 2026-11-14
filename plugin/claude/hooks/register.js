@@ -779,13 +779,13 @@ function unit(n, div, suffix) {
   return frac === 0 ? whole + suffix : whole + '.' + frac + suffix
 }
 
-// OMN_PET_RENDER=blocks|halfblock forces the mode (SSH from a Mac forwards no TERM_PROGRAM).
+// OMN_PET_RENDER=compact|blocks|halfblock forces the mode (SSH from a Mac forwards no TERM_PROGRAM).
 // Else Terminal.app gets blocks. tmux hides TERM_PROGRAM, so the bundle id counts too.
 export function renderModeOf(env) {
   const e = env || {}
   const forced = String(e.override || '').trim().toLowerCase()
-  if (forced === 'blocks' || forced === 'halfblock') return forced
-  if (e.termProgram === 'Apple_Terminal' || e.bundleId === 'com.apple.Terminal') return 'blocks'
+  if (forced === 'blocks' || forced === 'compact' || forced === 'halfblock') return forced
+  if (e.termProgram === 'Apple_Terminal' || e.bundleId === 'com.apple.Terminal') return 'compact'
   return 'halfblock'
 }
 
@@ -873,7 +873,22 @@ export function rasterOf(b64, mode) {
   const raw = present(b64)
   const cols = 16
   const nums = []
-  if ((mode || renderMode()) === 'blocks') {
+  const m = mode || renderMode()
+  if (m === 'compact') {
+    // Same 16x9 footprint as halfblock. Each pair of pixel rows keeps one cell:
+    // the top pixel, or the bottom one when the top is the sprite's background.
+    const bg = rgb(raw, 0)
+    const snap = truecolorOn() ? (c) => c : nearest256
+    for (let y = 0; y < 9; y++) {
+      for (let x = 0; x < cols; x++) {
+        const top = rgb(raw, ((2 * y) * cols + x) * 3)
+        const bot = rgb(raw, ((2 * y + 1) * cols + x) * 3)
+        nums.push(0x20, 0x01000000, snap(top !== bg ? top : bot))
+      }
+    }
+    return bytesB64(new Uint8Array(Uint32Array.from(nums).buffer))
+  }
+  if (m === 'blocks') {
     // No glyph: a space with the pixel as background fills its cell, line gap included.
     const snap = truecolorOn() ? (c) => c : nearest256
     for (let y = 0; y < 18; y++) {
