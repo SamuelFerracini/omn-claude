@@ -6,6 +6,8 @@ const VERSION = '0.4.27'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
+// Blocks mode draws the pet 16 columns wider, so the band needs 16 more before it splits.
+const blocksExtraColumns = 16
 const families = ['haiku', 'sonnet', 'opus', 'other']
 
 let keyPath = ''
@@ -91,6 +93,7 @@ export function register(on) {
       await $.ui.close({ id: PANE })
     } catch (err) {}
     // The server picks a random id unrelated to the key. A signed reply carries it.
+    await loadRenderEnv($)
     await refresh($)
     const others = Object.keys(await otherSessions($)).length
     if (portrait && portrait.status === 'sleeping' && others === 0) beginWake()
@@ -186,9 +189,10 @@ export function register(on) {
     if (e.plugin) ownPlugin = e.plugin
     const src = shownPortrait()
     const frame = src.frames[tick % src.frames.length]
+    const mode = renderMode()
     const picture =
       lastSurface === 'terminal'
-        ? Raster({ key: 'pet', columns: 16, rows: 9, cells: rasterOf(frame) })
+        ? Raster({ key: 'pet', columns: mode === 'blocks' ? 32 : 16, rows: mode === 'blocks' ? 18 : 9, cells: rasterOf(frame, mode) })
         : Svg({ children: svgOf(frame) })
     return Box({ flexDirection: 'row', columnGap: 2, children: [picture, meterText(Box, Text, (wakeFrom || portrait).growth)] })
   })
@@ -201,7 +205,7 @@ export function register(on) {
     const rows = p.rows || []
     const mine = rows.filter((r) => r.plugin === ownPlugin)
     const others = rows.filter((r) => r.plugin !== ownPlugin)
-    const wide = (p.bodyColumns || 0) >= wideBandColumns
+    const wide = (p.bodyColumns || 0) >= wideBandColumns + (lastSurface === 'terminal' && renderMode() === 'blocks' ? blocksExtraColumns : 0)
     if (!wide || p.isCollapsed || p.hasSurvey || !mine.length || !others.length) return next(e)
     const { Box } = $.ui.resolve(e)
     const right = await next({ ...e, props: { ...p, rows: others } })
@@ -454,7 +458,7 @@ export function __state(patch) {
   }
   return { reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait, petId, arriveLeft, arriveFrom, arriveTo, arrivePhase: arriveLeft > 0 ? arrivePhase() : '', note, namePrompt }
 }
-export { tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand }
+export { setRenderEnv, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand }
 
 function arrivePhase() {
   return arriveStep()[0]
@@ -781,10 +785,96 @@ function unit(n, div, suffix) {
   return frac === 0 ? whole + suffix : whole + '.' + frac + suffix
 }
 
-function rasterOf(b64) {
+// OMN_PET_RENDER=blocks|halfblock forces the mode (SSH from a Mac forwards no TERM_PROGRAM).
+// Else Terminal.app gets blocks. tmux hides TERM_PROGRAM, so the bundle id counts too.
+export function renderModeOf(env) {
+  const e = env || {}
+  const forced = String(e.override || '').trim().toLowerCase()
+  if (forced === 'blocks' || forced === 'halfblock') return forced
+  if (e.termProgram === 'Apple_Terminal' || e.bundleId === 'com.apple.Terminal') return 'blocks'
+  return 'halfblock'
+}
+
+let renderEnv = {}
+
+function renderMode() {
+  return renderModeOf(renderEnv)
+}
+
+async function loadRenderEnv($) {
+  try {
+    renderEnv = {
+      override: await $.env.get('OMN_PET_RENDER'),
+      termProgram: await $.env.get('TERM_PROGRAM'),
+      bundleId: await $.env.get('__CFBundleIdentifier'),
+      colorterm: await $.env.get('COLORTERM'),
+    }
+  } catch (err) {
+    renderEnv = {}
+  }
+}
+
+function setRenderEnv(env) {
+  renderEnv = env || {}
+}
+
+const cubeLevels = [0, 95, 135, 175, 215, 255]
+const xtermPalette = (() => {
+  const out = []
+  for (let r = 0; r < 6; r++) {
+    for (let g = 0; g < 6; g++) {
+      for (let b = 0; b < 6; b++) out.push((cubeLevels[r] << 16) | (cubeLevels[g] << 8) | cubeLevels[b])
+    }
+  }
+  for (let i = 0; i < 24; i++) {
+    const v = 8 + 10 * i
+    out.push((v << 16) | (v << 8) | v)
+  }
+  return out
+})()
+
+// Nearest of xterm-256 entries 16..255 by the "redmean" weighted RGB distance.
+export function nearest256(c) {
+  const r = (c >> 16) & 255
+  const g = (c >> 8) & 255
+  const b = c & 255
+  let best = 0
+  let bestD = Infinity
+  for (let i = 0; i < xtermPalette.length; i++) {
+    const p = xtermPalette[i]
+    const dr = r - ((p >> 16) & 255)
+    const dg = g - ((p >> 8) & 255)
+    const db = b - (p & 255)
+    const mr = (r + ((p >> 16) & 255)) / 2
+    const d = (2 + mr / 256) * dr * dr + 4 * dg * dg + (2 + (255 - mr) / 256) * db * db
+    if (d < bestD) {
+      bestD = d
+      best = i
+    }
+  }
+  return xtermPalette[best]
+}
+
+function truecolorOn() {
+  const t = String(renderEnv.colorterm || '').toLowerCase()
+  return t === 'truecolor' || t === '24bit'
+}
+
+export function rasterOf(b64, mode) {
   const raw = present(b64)
   const cols = 16
   const nums = []
+  if ((mode || renderMode()) === 'blocks') {
+    // No glyph: a space with the pixel as background fills its cell, line gap included.
+    const snap = truecolorOn() ? (c) => c : nearest256
+    for (let y = 0; y < 18; y++) {
+      for (let x = 0; x < cols; x++) {
+        const c = snap(rgb(raw, (y * cols + x) * 3))
+        nums.push(0x20, 0x01000000, c, 0x20, 0x01000000, c)
+      }
+    }
+    return bytesB64(new Uint8Array(Uint32Array.from(nums).buffer))
+  }
   for (let y = 0; y < 9; y++) {
     for (let x = 0; x < cols; x++) {
       const top = ((2 * y) * cols + x) * 3

@@ -40,10 +40,10 @@ Make the pet render cleanly in Terminal.app, and keep every other terminal on th
 
 ## Done when
 
-- [ ] Tests pass, including the new ones.
+- [x] Tests pass, including the new ones.
 
-- [ ] The non-Mac half-block output is unchanged, proven by a test.
+- [x] The non-Mac half-block output is unchanged, proven by a test.
 
 - [ ] In Terminal.app the pet has no seams and its colours are clean. Describe how you checked, since a real Terminal.app check may need the user.
 
-- [ ] Host limits you found, and the env var name, are saved with `save_note`.
+- [x] Host limits you found, and the env var name, are saved with `save_note`.
