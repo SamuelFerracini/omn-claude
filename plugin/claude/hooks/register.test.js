@@ -364,15 +364,16 @@ test('render mode: halfblock unless Terminal.app or forced', () => {
   assert.equal(renderModeOf({}), 'halfblock')
   assert.equal(renderModeOf(undefined), 'halfblock')
   assert.equal(renderModeOf({ termProgram: 'iTerm.app' }), 'halfblock')
-  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'blocks')
-  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'blocks')
+  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'compact')
+  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'compact')
   assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.googlecode.iterm2' }), 'halfblock')
 })
 
 test('render mode: OMN_PET_RENDER wins both ways', () => {
   assert.equal(renderModeOf({ override: 'blocks' }), 'blocks')
   assert.equal(renderModeOf({ override: 'halfblock', termProgram: 'Apple_Terminal' }), 'halfblock')
-  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'blocks')
+  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'compact')
+  assert.equal(renderModeOf({ override: 'compact' }), 'compact')
 })
 
 test('halfblock output is byte-identical to the pre-change output', () => {
@@ -385,7 +386,7 @@ test('halfblock output is byte-identical to the pre-change output', () => {
 })
 
 test('blocks output is a 32x18 grid of spaces with bg only', () => {
-  setRenderEnv({ termProgram: 'Apple_Terminal', colorterm: 'truecolor' })
+  setRenderEnv({ override: 'blocks', colorterm: 'truecolor' })
   const cells = cellsOf(rasterOf(spriteB64))
   setRenderEnv({})
   assert.equal(cells.length, 32 * 18 * 3)
@@ -414,4 +415,22 @@ test('nearest256 maps known colours', () => {
   assert.equal(nearest256(0xfe0101), 0xff0000)
   assert.equal(nearest256(0x0a0a0a), 0x080808)
   assert.equal(nearest256(0x101010), 0x121212)
+})
+
+test('compact output is a 16x9 bg-only grid keeping the non-background pixel', () => {
+  const bg = [10, 20, 30]
+  const px = []
+  for (let i = 0; i < 16 * 18; i++) px.push(...bg)
+  const at = (x, y, c) => px.splice((y * 16 + x) * 3, 3, ...c)
+  at(3, 4, [200, 100, 50]) // top of pair 2
+  at(5, 7, [0, 255, 0]) // bottom of pair 3, top is bg
+  const b64 = Buffer.from(Uint8Array.from(px)).toString('base64')
+  setRenderEnv({ termProgram: 'Apple_Terminal', colorterm: '24bit' })
+  const cells = cellsOf(rasterOf(b64))
+  setRenderEnv({})
+  assert.equal(cells.length, 16 * 9 * 3)
+  for (let i = 0; i < cells.length; i += 3) assert.deepEqual([cells[i], cells[i + 1]], [0x20, 0x01000000])
+  assert.equal(cells[(2 * 16 + 3) * 3 + 2], (200 << 16) | (100 << 8) | 50)
+  assert.equal(cells[(3 * 16 + 5) * 3 + 2], 0x00ff00)
+  assert.equal(cells[0 * 3 + 2], (10 << 16) | (20 << 8) | 30)
 })
