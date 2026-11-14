@@ -183,18 +183,8 @@ export function register(on) {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (!portrait || !portrait.frames || !portrait.frames.length) return next(e)
-    lastSurface = e.surface || 'terminal'
-    const { Box, Text, Raster, Svg } = $.ui.resolve(e)
-    if (e.plugin) ownPlugin = e.plugin
-    const src = shownPortrait()
-    const frame = src.frames[tick % src.frames.length]
-    const mode = renderMode()
-    const picture =
-      lastSurface === 'terminal'
-        ? Raster({ key: 'pet', columns: mode === 'blocks' ? 32 : 16, rows: mode === 'blocks' ? 18 : 9, cells: rasterOf(frame, mode) })
-        : Svg({ children: svgOf(frame) })
-    return Box({ flexDirection: 'row', columnGap: 2, children: [picture, meterText(Box, Text, (wakeFrom || portrait).growth)] })
+    const tree = petTree($, e)
+    return tree || next(e)
   })
 
   // The engine asks AbovePrompt once per plugin, so only the list sees every row.
@@ -207,12 +197,16 @@ export function register(on) {
     const others = rows.filter((r) => r.plugin !== ownPlugin)
     const wide = (p.bodyColumns || 0) >= wideBandColumns + (lastSurface === 'terminal' && renderMode() === 'blocks' ? blocksExtraColumns : 0)
     if (!wide || p.isCollapsed || p.hasSurvey || !mine.length || !others.length) return next(e)
+    // The engine refuses rows copied by value, so omn's row is left out of next
+    // and drawn again here.
+    const pet = petTree($, e)
+    if (!pet) return next(e)
     const { Box } = $.ui.resolve(e)
     const right = await next({ ...e, props: { ...p, rows: others } })
     return Box({
       flexDirection: 'row',
       columnGap: 2,
-      children: [...mine.map((r) => r.tree), Box({ flexGrow: 1, flexShrink: 1, children: [right] })],
+      children: [pet, Box({ flexGrow: 1, flexShrink: 1, children: [right] })],
     })
   })
 
@@ -858,6 +852,21 @@ export function nearest256(c) {
 function truecolorOn() {
   const t = String(renderEnv.colorterm || '').toLowerCase()
   return t === 'truecolor' || t === '24bit'
+}
+
+function petTree($, e) {
+  if (!portrait || !portrait.frames || !portrait.frames.length) return null
+  lastSurface = e.surface || 'terminal'
+  const { Box, Text, Raster, Svg } = $.ui.resolve(e)
+  if (e.plugin) ownPlugin = e.plugin
+  const src = shownPortrait()
+  const frame = src.frames[tick % src.frames.length]
+  const mode = renderMode()
+  const picture =
+    lastSurface === 'terminal'
+      ? Raster({ key: 'pet', columns: mode === 'blocks' ? 32 : 16, rows: mode === 'blocks' ? 18 : 9, cells: rasterOf(frame, mode) })
+      : Svg({ children: svgOf(frame) })
+  return Box({ flexDirection: 'row', columnGap: 2, children: [picture, meterText(Box, Text, (wakeFrom || portrait).growth)] })
 }
 
 export function rasterOf(b64, mode) {
