@@ -351,7 +351,7 @@ test('letgo with the same id still runs the arrive scene, then asks a nick', asy
 })
 
 // ---- Terminal.app render mode ----
-import { renderModeOf, nearest256, rasterOf, setRenderEnv } from './register.js'
+import { renderModeOf, nearest256, rasterOf, rgbaOf, setRenderEnv } from './register.js'
 
 const spriteB64 = (() => {
   const px = []
@@ -364,16 +364,17 @@ test('render mode: halfblock unless Terminal.app or forced', () => {
   assert.equal(renderModeOf({}), 'halfblock')
   assert.equal(renderModeOf(undefined), 'halfblock')
   assert.equal(renderModeOf({ termProgram: 'iTerm.app' }), 'halfblock')
-  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'compact')
-  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'compact')
+  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'blocks')
+  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'blocks')
   assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.googlecode.iterm2' }), 'halfblock')
 })
 
 test('render mode: OMN_PET_RENDER wins both ways', () => {
   assert.equal(renderModeOf({ override: 'blocks' }), 'blocks')
   assert.equal(renderModeOf({ override: 'halfblock', termProgram: 'Apple_Terminal' }), 'halfblock')
-  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'compact')
+  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'blocks')
   assert.equal(renderModeOf({ override: 'compact' }), 'compact')
+  assert.equal(renderModeOf({ override: 'image', termProgram: 'Apple_Terminal' }), 'image')
 })
 
 test('halfblock output is byte-identical to the pre-change output', () => {
@@ -425,12 +426,47 @@ test('compact output is a 16x9 bg-only grid keeping the non-background pixel', (
   at(3, 4, [200, 100, 50]) // top of pair 2
   at(5, 7, [0, 255, 0]) // bottom of pair 3, top is bg
   const b64 = Buffer.from(Uint8Array.from(px)).toString('base64')
-  setRenderEnv({ termProgram: 'Apple_Terminal', colorterm: '24bit' })
+  setRenderEnv({ override: 'compact', colorterm: '24bit' })
   const cells = cellsOf(rasterOf(b64))
   setRenderEnv({})
   assert.equal(cells.length, 16 * 9 * 3)
   for (let i = 0; i < cells.length; i += 3) assert.deepEqual([cells[i], cells[i + 1]], [0x20, 0x01000000])
   assert.equal(cells[(2 * 16 + 3) * 3 + 2], (200 << 16) | (100 << 8) | 50)
   assert.equal(cells[(3 * 16 + 5) * 3 + 2], 0x00ff00)
+  at(7, 10, [100, 0, 0])
+  at(7, 11, [200, 0, 0])
+  const mixed = cellsOf((setRenderEnv({ override: 'compact', colorterm: '24bit' }), rasterOf(Buffer.from(Uint8Array.from(px)).toString('base64'))))
+  setRenderEnv({})
+  assert.equal(mixed[(5 * 16 + 7) * 3 + 2], 150 << 16)
   assert.equal(cells[0 * 3 + 2], (10 << 16) | (20 << 8) | 30)
+})
+
+test('image mode draws an Image of the 16x18 RGBA sprite in the 16x9 box', async () => {
+  const sprite = Buffer.from(Uint8Array.from({ length: 16 * 18 * 3 }, (_, i) => i & 255)).toString('base64')
+  resetPortraitState()
+  __state({ portrait: { frames: [sprite], growth: 5, name: 'Pip' } })
+  setRenderEnv({ override: 'image' })
+  const el = (type) => (props) => ({ type, props })
+  const $r = { ui: { resolve: () => ({ Box: el('box'), Text: el('text'), Raster: el('raster'), Svg: el('svg'), Image: el('image') }) } }
+  let hook
+  register((event, matcher, fn) => {
+    if (event === 'ui.render' && matcher && matcher.component === 'AbovePrompt') hook = fn
+  })
+  const out = await hook($r, { surface: 'terminal' }, async () => 'next')
+  setRenderEnv({})
+  resetPortraitState()
+  const img = out.props.children[0]
+  assert.equal(img.type, 'image')
+  assert.equal(img.props.key, 'pet')
+  assert.deepEqual([img.props.columns, img.props.rows], [16, 9])
+  assert.deepEqual([img.props.source.width, img.props.source.height], [16, 18])
+  const rgba = Uint8Array.from(Buffer.from(img.props.source.rgba, 'base64'))
+  assert.equal(rgba.length, 16 * 18 * 4)
+  assert.deepEqual(Array.from(rgba.slice(0, 4)), [0, 1, 2, 255])
+})
+
+test('rgbaOf is opaque RGBA', () => {
+  const b = Uint8Array.from(Buffer.from(rgbaOf(spriteB64), 'base64'))
+  assert.equal(b.length, 16 * 18 * 4)
+  for (let i = 3; i < b.length; i += 4) assert.equal(b[i], 255)
 })
