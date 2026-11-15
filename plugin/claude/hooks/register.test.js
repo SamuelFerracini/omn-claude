@@ -628,3 +628,12 @@ test('sshHelpOf quotes a key path with spaces, matches a .pub IdentityFile', () 
   assert.equal(sshHelpOf('/h/my keys/k', []).split('\n')[4], '  IdentityFile "/h/my keys/k"')
   assert.equal(sshHelpOf('/h/k', ['/h/k.pub']), 'ssh omn.sh')
 })
+
+test('VERSION in register.js matches plugin.json', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const src = await readFile(new URL('./register.js', import.meta.url), 'utf8')
+  const manifest = JSON.parse(await readFile(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'))
+  const m = src.match(/^const VERSION = '([^']+)'/m)
+  assert.ok(m, 'VERSION constant not found in register.js')
+  assert.equal(manifest.version, m[1])
+})
