@@ -621,10 +621,11 @@ const stageAt = [0, 500, 20000, 120000, 500000]
 // Block heights in eighths, and the full height of each pip in the staircase.
 const pipLevels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 const pipHeights = [2, 4, 6, 8]
+const stairs = pipHeights.map((h) => pipLevels[h - 1])
 const cDim = '#8a86a0'
 const cExp = '#9d8cff'
 const cPulse = '#efeaff'
-const cOff = '#4a4566'
+const cTrack = '#4a4566'
 const cText = '#e8e6f0'
 const cFed = '#f2b84b'
 const cWarn = '#ff5a36'
@@ -634,8 +635,7 @@ function meterText(Box, Text, growth) {
   const pct = expPct(g)
   const pulse = pct > 85 && pct < 100 && tick % 8 < 4
   const on = pipGlyphs(pct)
-  // Unfilled pips are low ticks, so a tall dark block never reads as a broken bar.
-  const off = '▁'.repeat(pipHeights.length - on.length)
+  const off = stairs.slice(on.length).join('')
   const row = [Text({ color: cDim, children: ['exp'] })]
   if (pulse && on.length) {
     const head = on.slice(0, -1).join('')
@@ -644,7 +644,7 @@ function meterText(Box, Text, growth) {
   } else if (on.length) {
     row.push(Text({ color: cExp, children: [on.join('')] }))
   }
-  if (off) row.push(Text({ color: cOff, children: [off] }))
+  if (off) row.push(Text({ color: cTrack, children: [off] }))
   row.push(Text({ color: cText, children: [compact(g)] }))
   const lines = []
   const name = cleanLabel(portrait && portrait.name, 32)
@@ -767,19 +767,11 @@ function expPct(g) {
   return v
 }
 
-// Each pip covers a quarter of the stage. Full pips stand at their staircase
-// height; the pip being filled grows from ▁ toward its height as exp comes in.
+// Each pip covers a quarter of the stage and lights once exp enters it. Pips
+// keep their full staircase height; only the color tells filled from empty.
 export function pipGlyphs(v) {
-  const on = []
-  const span = 100 / pipHeights.length
-  for (let i = 0; i < pipHeights.length; i++) {
-    const lo = i * span
-    if (v <= lo) break
-    const frac = Math.min(1, (v - lo) / span)
-    const h = Math.max(1, Math.round(frac * pipHeights[i]))
-    on.push(pipLevels[h - 1])
-  }
-  return on
+  const n = v > 0 ? Math.min(stairs.length, Math.ceil(v / (100 / stairs.length))) : 0
+  return stairs.slice(0, n)
 }
 
 function compact(n) {

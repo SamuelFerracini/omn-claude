@@ -473,9 +473,9 @@ test('rgbaOf is opaque RGBA', () => {
 
 test('exp pips fill bit by bit up the staircase', () => {
   assert.deepEqual(pipGlyphs(0), [])
-  assert.deepEqual(pipGlyphs(10), ['▁'])
+  assert.deepEqual(pipGlyphs(10), ['▂'])
   assert.deepEqual(pipGlyphs(50), ['▂', '▄'])
-  assert.deepEqual(pipGlyphs(71.9), ['▂', '▄', '▅'])
+  assert.deepEqual(pipGlyphs(71.9), ['▂', '▄', '▆'])
   assert.deepEqual(pipGlyphs(100), ['▂', '▄', '▆', '█'])
 })
 
