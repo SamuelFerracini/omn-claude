@@ -618,14 +618,12 @@ async function refresh($, growth) {
 }
 
 const stageAt = [0, 500, 20000, 120000, 500000]
-// Block heights in eighths, and the full height of each pip in the staircase.
-const pipLevels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
-const pipHeights = [2, 4, 6, 8]
-const stairs = pipHeights.map((h) => pipLevels[h - 1])
+// Four full-height pips, one per stage quarter.
+const pips = ['█', '█', '█', '█']
 const cDim = '#8a86a0'
 const cExp = '#9d8cff'
 const cPulse = '#efeaff'
-const cTrack = '#4a4566'
+const cTrack = '#6b6880'
 const cText = '#e8e6f0'
 const cFed = '#f2b84b'
 const cWarn = '#ff5a36'
@@ -635,7 +633,7 @@ function meterText(Box, Text, growth) {
   const pct = expPct(g)
   const pulse = pct > 85 && pct < 100 && tick % 8 < 4
   const on = pipGlyphs(pct)
-  const off = stairs.slice(on.length).join('')
+  const off = pips.slice(on.length).join('')
   const row = [Text({ color: cDim, children: ['exp'] })]
   if (pulse && on.length) {
     const head = on.slice(0, -1).join('')
@@ -770,8 +768,8 @@ function expPct(g) {
 // Each pip covers a quarter of the stage and lights once exp enters it. Pips
 // keep their full staircase height; only the color tells filled from empty.
 export function pipGlyphs(v) {
-  const n = v > 0 ? Math.min(stairs.length, Math.ceil(v / (100 / stairs.length))) : 0
-  return stairs.slice(0, n)
+  const n = v > 0 ? Math.min(pips.length, Math.ceil(v / (100 / pips.length))) : 0
+  return pips.slice(0, n)
 }
 
 function compact(n) {

@@ -30,8 +30,8 @@ Each of the 4 pips is a full block `█`, same height. A pip is purple (`cExp`, 
 
 ## Done when
 
-- [ ] `register.js` renders 4 full-height pips: purple for reached quarters, visible gray for the rest.
+- [x] `register.js` renders 4 full-height pips: purple for reached quarters, visible gray for the rest.
 
-- [ ] Tests in `plugin/claude/hooks/register.test.js` pass (`node --test plugin/claude/hooks/`).
+- [x] Tests in `plugin/claude/hooks/register.test.js` pass (`node --test plugin/claude/hooks/`).
 
-- [ ] Committed on the branch.
+- [x] Committed on the branch.
