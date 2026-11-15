@@ -30,8 +30,8 @@ Always draw the full staircase `▂▄▆█` (heights from `pipHeights`). Unfil
 
 ## Done when
 
-- [ ] Meter shows `▂▄▆█` always, with lit pips in `cExp` and the rest in gray.
+- [x] Meter shows `▂▄▆█` always, with lit pips in `cExp` and the rest in gray.
 
-- [ ] `node --test plugin/claude/hooks/register.test.js` passes.
+- [x] `node --test plugin/claude/hooks/register.test.js` passes.
 
-- [ ] Committed on the branch.
+- [x] Committed on the branch.
