@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.27'
+const VERSION = '0.4.28'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -14,7 +14,7 @@ let keyPath = ''
 let releaseArmedAt = 0
 const releaseWindow = 60000
 const nickRule = /^[A-Za-z0-9_-]{1,12}$/
-const usageText = 'usage: /omn | /omn key <private-key>'
+const usageText = 'usage: /omn | /omn key <private-key> | /omn ssh'
 let petId = ''
 let warned = false
 let tick = 0
@@ -102,8 +102,12 @@ export function register(on) {
     if (wakeLeft === 0) await refresh($)
     await $.command.register({
       name: 'omn',
-      description: 'Show your omn pet, or set its SSH key',
-      argumentHint: '[key <path>]',
+      description: 'Show your omn pet, set its SSH key, or show the ssh command that reaches it',
+      argumentHint: '[key <path> | ssh]',
+    })
+    await $.command.register({
+      name: 'omn-adopt',
+      description: 'Hatch your omn pet, with an omn-only key when you have no SSH key',
     })
     await $.command.register({
       name: 'omn-name',
@@ -154,18 +158,19 @@ export function register(on) {
       $.ui.invalidate('ui.render')
       return { text: petId ? 'omn ' + petId : usageText }
     }
+    if (arg === 'ssh') return sshCommand($)
     if (arg.startsWith('key ') || arg.startsWith('/') || arg.startsWith('~') || arg.startsWith('.')) {
-      keyPath = await preferPrivate($, arg.startsWith('key ') ? arg.slice(4).trim() : arg)
-      await $.store.set('sshKey', keyPath)
-      warned = false
-      // The old key's pet must not stay on screen. The reply of open brings the new key's pet.
-      petId = ''
-      portrait = null
-      await $.store.set('petId', '')
+      await useKey($, await preferPrivate($, arg.startsWith('key ') ? arg.slice(4).trim() : arg))
       await postSession($, 'open')
       return { text: 'omn key ' + keyPath + (petId ? ' (' + petId + ')' : '') }
     }
     return { text: usageText }
+  })
+
+  on('command.run', { command: 'omn-adopt' }, async ($, e) => {
+    releaseArmedAt = 0
+    if ((e.args || '').trim() !== '') return { text: 'usage: /omn-adopt (no nick: rename it after with /omn-name <nick>)' }
+    return adoptCommand($)
   })
 
   on('command.run', { command: 'omn-name' }, async ($, e) => {
@@ -1668,11 +1673,12 @@ export function sessionPetId(text, current) {
   }
 }
 
+// Returns { reply } (the parsed reply, {} for close) on 200, else { error }. Never throws.
 async function postSession($, op) {
   const nonce = sessionNonce()
   try {
     const signed = await signPayload($, nonce, (pubkey, ts) => sessionCanonical(pubkey, ts, nonce, op))
-    if (!signed) return
+    if (!signed) return { error: 'no SSH key: run /omn-adopt or /omn key <path>' }
     const res = await $.http.fetch(SERVER + '/v1/claude/session', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1684,17 +1690,19 @@ async function postSession($, op) {
         sig: signed.sig,
       }),
     })
-    if (res.status === 401) return
-    if (await handleStatus($, res)) return
+    if (res.status === 401) return { error: 'signature rejected' }
+    if (await handleStatus($, res)) return { error: 'omn ' + res.status }
     if (!res.ok) throw new Error('omn ' + res.status)
-    if (op !== 'close') {
-      // The signed key decides the pet. A reply id that differs is the key's real pet.
-      const id = sessionPetId(res.text, petId)
-      if (id) await rememberPet($, id)
-      if (op === 'open') await openReply($, res.text)
-    }
+    if (op === 'close') return { reply: {} }
+    // The signed key decides the pet. A reply id that differs is the key's real pet.
+    const id = sessionPetId(res.text, petId)
+    if (id) await rememberPet($, id)
+    if (op === 'open') await openReply($, res.text)
+    return { reply: replyOf(res.text) }
   } catch (err) {
-    if (op === 'open') $.ui.log('omn stay-awake skipped: ' + (err && err.message ? err.message : 'sign'))
+    const why = err && err.message ? err.message : 'sign'
+    if (op === 'open') $.ui.log('omn stay-awake skipped: ' + why)
+    return { error: why }
   }
 }
 
@@ -1976,12 +1984,111 @@ async function resolveKey($) {
   const home = await $.env.get('HOME')
   if (!home) return ''
   const has = (path) => exists($, path)
+  const found = await firstKeyOf(await sshIdentityFiles($, home), has)
+  if (found) return found
+  return firstKeyOf(fallbackKeys.map((name) => home + '/.ssh/' + name), has)
+}
+
+// The IdentityFile paths `ssh omn.sh` would try, from `ssh -G omn.sh`. [] when ssh fails.
+async function sshIdentityFiles($, home) {
   try {
     const run = await $.process.run(['ssh', '-G', 'omn.sh'])
-    if (run && run.exitCode === 0) {
-      const found = await firstKeyOf(identityFilesOf(run.stdout, home), has)
-      if (found) return found
-    }
+    if (run && run.exitCode === 0) return identityFilesOf(run.stdout, home)
   } catch (err) {}
-  return firstKeyOf(fallbackKeys.map((name) => home + '/.ssh/' + name), has)
+  return []
+}
+
+function replyOf(text) {
+  try {
+    const v = JSON.parse(text)
+    return v && typeof v === 'object' ? v : {}
+  } catch (err) {
+    return {}
+  }
+}
+
+// Makes path the plugin's key, the same as /omn key. The old key's pet must not
+// stay on screen: the reply of the next open brings this key's pet.
+async function useKey($, path) {
+  keyPath = path
+  await $.store.set('sshKey', path)
+  warned = false
+  petId = ''
+  portrait = null
+  await $.store.set('petId', '')
+}
+
+const ownKeyName = 'omn_ed25519'
+
+// The key omn makes for a user with no SSH key. The host gives plugins no data
+// folder ($.plugin.root is replaced on update), so it lives in ~/.config/omn,
+// where signing already writes. Nothing is ever written under ~/.ssh.
+// An omn key already there is used again, never overwritten.
+async function ownKey($) {
+  const home = await $.env.get('HOME')
+  if (!home) throw new Error('no HOME for ~/.config/omn')
+  const dir = home + '/.config/omn'
+  const path = dir + '/' + ownKeyName
+  let made = false
+  if (!(await exists($, path))) {
+    await $.process.run(['mkdir', '-p', dir])
+    const run = await $.process.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'omn', '-f', path])
+    if (run.exitCode !== 0) throw new Error('ssh-keygen -t ed25519 failed: ' + String(run.stderr || '').trim())
+    made = true
+  }
+  await $.process.run(['chmod', '600', path])
+  return { path, made }
+}
+
+// /omn-adopt: the signed open session start sends, so the server adopts a pet
+// for a key with none and answers the pet a key already has. With no SSH key it
+// first makes omn's own. The hatch scene comes from openReply, as on start.
+async function adoptCommand($) {
+  let own = null
+  if (!(await resolveKey($))) {
+    try {
+      own = await ownKey($)
+    } catch (err) {
+      return { text: 'omn: ' + (err && err.message ? err.message : 'ssh-keygen failed') }
+    }
+    await useKey($, own.path)
+  }
+  const done = await postSession($, 'open')
+  if (!done.reply) return { text: 'omn: ' + done.error }
+  $.ui.invalidate('ui.render')
+  const id = petIdOf(done.reply.id) || petId
+  const name = cleanLabel(done.reply.name, 32) || id
+  const tag = name === id ? id : name + ' (' + id + ')'
+  const key = own ? '. key ' + own.path + (own.made ? ' (new)' : '') + ': /omn ssh shows how to reach it over SSH' : ''
+  if (done.reply.hatched === true) return { text: 'omn hatched ' + tag + key }
+  return { text: 'omn ' + tag + ' is already yours' + key }
+}
+
+// /omn ssh: the command that reaches the pet this plugin signs for.
+async function sshCommand($) {
+  const key = await resolveKey($)
+  if (!key) return { text: 'omn: no key yet. run /omn-adopt' }
+  const home = await $.env.get('HOME')
+  return { text: sshHelpOf(keyPair(key).priv, await sshIdentityFiles($, home)) }
+}
+
+// `ssh omn.sh` when ssh already tries key for omn.sh, else `ssh -i`. The server
+// takes the first key ssh offers, and ssh offers agent keys before an -i key,
+// so -i needs IdentitiesOnly. The config snippet is for the user to add: the
+// plugin never edits ~/.ssh/config.
+export function sshHelpOf(key, used) {
+  if ((used || []).some((p) => keyPair(p).priv === key)) return 'ssh omn.sh'
+  const conf = /\s/.test(key) ? '"' + key + '"' : key
+  return [
+    'ssh -i ' + shellWord(key) + ' -o IdentitiesOnly=yes omn.sh',
+    '',
+    'optional, so plain `ssh omn.sh` reaches this pet: add to ~/.ssh/config yourself',
+    'Host omn.sh',
+    '  IdentityFile ' + conf,
+    '  IdentitiesOnly yes',
+  ].join('\n')
+}
+
+function shellWord(s) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'"
 }

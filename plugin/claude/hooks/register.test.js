@@ -1,7 +1,7 @@
 import test from 'node:test'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
-import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, pipGlyphs } from './register.js'
+import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, sshHelpOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, pipGlyphs } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -477,4 +477,151 @@ test('exp pips fill bit by bit up the staircase', () => {
   assert.deepEqual(pipGlyphs(50), ['▂', '▄'])
   assert.deepEqual(pipGlyphs(71.9), ['▂', '▄', '▅'])
   assert.deepEqual(pipGlyphs(100), ['▂', '▄', '▆', '█'])
+})
+
+function commandHook(name) {
+  let hook
+  register((event, matcher, fn) => {
+    if (event === 'command.run' && matcher && matcher.command === name) hook = fn
+  })
+  return hook
+}
+
+// A host with a fake file system: ssh-keygen -t writes the key pair into it,
+// ssh -G lists the given IdentityFiles, and every write and argv is recorded.
+function keyHost(routes, { files = [], identities = [] } = {}) {
+  const host = server(routes)
+  const fsFiles = new Set(files)
+  const runs = []
+  const writes = []
+  host.$.fs = {
+    exists: async (p) => fsFiles.has(p),
+    write: async (p) => void (writes.push(p), fsFiles.add(p), fsFiles.add(p + '.sig')),
+    read: async () => 'SIG',
+  }
+  host.$.process = {
+    run: async (args) => {
+      runs.push(args)
+      if (args[0] === 'ssh' && args[1] === '-G') return { exitCode: 0, stdout: identities.map((p) => 'identityfile ' + p).join('\n') + '\n' }
+      if (args[0] === 'ssh-keygen' && args.includes('-t')) {
+        const out = args[args.indexOf('-f') + 1]
+        fsFiles.add(out)
+        fsFiles.add(out + '.pub')
+        return { exitCode: 0, stdout: '' }
+      }
+      if (args[1] === '-y') return { exitCode: 0, stdout: 'ssh-ed25519 AAAA omn' }
+      return { exitCode: 0, stdout: '' }
+    },
+  }
+  return { ...host, runs, writes, fsFiles }
+}
+
+const hatchedReply = { id: 'ab3xy7qz', hatched: true, name: 'Pip', species: 'Blob', named: false }
+const ownKeyPath = '/h/.config/omn/omn_ed25519'
+
+test('/omn-adopt with an SSH key hatches that key\'s pet and makes no key', async () => {
+  freshPet({ keyPath: '' })
+  const { $, calls, runs, data } = keyHost(
+    { '/v1/claude/session': { body: hatchedReply }, '/p/ab3xy7qz.json': { body: egg } },
+    { files: ['/h/.ssh/id_ed25519'], identities: ['~/.ssh/id_ed25519'] },
+  )
+  const out = await commandHook('omn-adopt')($, { args: '' })
+  assert.deepEqual(out, { text: 'omn hatched Pip (ab3xy7qz)' })
+  assert.equal(__state().petId, 'ab3xy7qz')
+  assert.equal(__state().arrivePhase, 'drop')
+  playScene($)
+  assert.equal(calls.toast[0], 'omn hatched! meet Pip')
+  assert.ok(!runs.some((a) => a[0] === 'ssh-keygen' && a.includes('-t')))
+  assert.ok(runs.some((a) => a[0] === 'ssh-keygen' && a[1] === '-Y' && a[4] === '/h/.ssh/id_ed25519'))
+  assert.equal(data.get('sshKey'), undefined)
+})
+
+test('/omn-adopt with a pet already shows it and its id, no second hatch', async () => {
+  freshPet({ keyPath: '/h/.ssh/id_ed25519', petId: 'ab3xy7qz', portrait: egg })
+  const { $, calls, runs } = keyHost(
+    { '/v1/claude/session': { body: { ...hatchedReply, hatched: false, name: 'Bo', named: true } }, '/p/ab3xy7qz.json': { body: egg } },
+    { files: ['/h/.ssh/id_ed25519'] },
+  )
+  const out = await commandHook('omn-adopt')($, { args: '' })
+  assert.deepEqual(out, { text: 'omn Bo (ab3xy7qz) is already yours' })
+  assert.equal(__state().arriveLeft, 0)
+  assert.deepEqual(calls.toast, [])
+  assert.ok(!runs.some((a) => a[0] === 'ssh-keygen' && a.includes('-t')))
+})
+
+test('/omn-adopt with no SSH key makes omn_ed25519 in ~/.config/omn and never writes ~/.ssh', async () => {
+  freshPet({ keyPath: '' })
+  const { $, runs, writes, data, fsFiles } = keyHost(
+    { '/v1/claude/session': { body: hatchedReply }, '/p/ab3xy7qz.json': { body: egg } },
+    { identities: ['~/.ssh/id_rsa', '~/.ssh/id_ed25519'] },
+  )
+  const out = await commandHook('omn-adopt')($, { args: '' })
+  assert.deepEqual(out, { text: 'omn hatched Pip (ab3xy7qz). key ' + ownKeyPath + ' (new): /omn ssh shows how to reach it over SSH' })
+  assert.ok(runs.some((a) => a.join(' ') === 'ssh-keygen -q -t ed25519 -N  -C omn -f ' + ownKeyPath))
+  assert.ok(runs.some((a) => a.join(' ') === 'chmod 600 ' + ownKeyPath))
+  assert.ok(runs.some((a) => a[0] === 'ssh-keygen' && a[1] === '-Y' && a[4] === ownKeyPath))
+  assert.equal(data.get('sshKey'), ownKeyPath)
+  assert.equal(data.get('petId'), 'ab3xy7qz')
+  assert.ok(fsFiles.has(ownKeyPath))
+  const underSsh = (p) => typeof p === 'string' && p.startsWith('/h/.ssh')
+  assert.deepEqual(writes.filter(underSsh), [])
+  assert.deepEqual(runs.filter((a) => a.some(underSsh)), [])
+  assert.deepEqual([...fsFiles].filter(underSsh), [])
+})
+
+test('/omn-adopt reuses an omn key already in ~/.config/omn', async () => {
+  freshPet({ keyPath: '' })
+  const { $, runs, data } = keyHost(
+    { '/v1/claude/session': { body: { ...hatchedReply, hatched: false } }, '/p/ab3xy7qz.json': { body: egg } },
+    { files: [ownKeyPath] },
+  )
+  const out = await commandHook('omn-adopt')($, { args: '' })
+  assert.equal(out.text, 'omn Pip (ab3xy7qz) is already yours. key ' + ownKeyPath + ': /omn ssh shows how to reach it over SSH')
+  assert.ok(!runs.some((a) => a[0] === 'ssh-keygen' && a.includes('-t')))
+  assert.equal(data.get('sshKey'), ownKeyPath)
+})
+
+test('/omn-adopt takes no nick', async () => {
+  freshPet()
+  const { $, fetched } = keyHost({})
+  const out = await commandHook('omn-adopt')($, { args: 'Bo' })
+  assert.match(out.text, /^usage: \/omn-adopt/)
+  assert.deepEqual(fetched, [])
+})
+
+test('/omn ssh prints plain ssh omn.sh for a key ssh already tries', async () => {
+  freshPet({ keyPath: '/h/.ssh/id_ed25519' })
+  const { $ } = keyHost({}, { identities: ['~/.ssh/id_rsa', '~/.ssh/id_ed25519'] })
+  assert.deepEqual(await commandHook('omn')($, { args: 'ssh' }), { text: 'ssh omn.sh' })
+})
+
+test('/omn ssh prints ssh -i and a config snippet for the omn key', async () => {
+  freshPet({ keyPath: ownKeyPath })
+  const { $, runs, writes } = keyHost({}, { identities: ['~/.ssh/id_ed25519'] })
+  const out = await commandHook('omn')($, { args: 'ssh' })
+  assert.equal(
+    out.text,
+    [
+      'ssh -i ' + ownKeyPath + ' -o IdentitiesOnly=yes omn.sh',
+      '',
+      'optional, so plain `ssh omn.sh` reaches this pet: add to ~/.ssh/config yourself',
+      'Host omn.sh',
+      '  IdentityFile ' + ownKeyPath,
+      '  IdentitiesOnly yes',
+    ].join('\n'),
+  )
+  assert.deepEqual(writes, [])
+  assert.deepEqual(runs, [['ssh', '-G', 'omn.sh']])
+})
+
+test('/omn ssh with no key points at /omn-adopt', async () => {
+  freshPet({ keyPath: '' })
+  const { $ } = keyHost({})
+  assert.deepEqual(await commandHook('omn')($, { args: 'ssh' }), { text: 'omn: no key yet. run /omn-adopt' })
+})
+
+test('sshHelpOf quotes a key path with spaces, matches a .pub IdentityFile', () => {
+  assert.equal(sshHelpOf('/h/my keys/k', []).split('\n')[0], "ssh -i '/h/my keys/k' -o IdentitiesOnly=yes omn.sh")
+  assert.equal(sshHelpOf('/h/my keys/k', []).split('\n')[4], '  IdentityFile "/h/my keys/k"')
+  assert.equal(sshHelpOf('/h/k', ['/h/k.pub']), 'ssh omn.sh')
 })
