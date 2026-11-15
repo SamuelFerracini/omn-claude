@@ -49,8 +49,8 @@ A terminal cell has only one fg and one bg color. So the current pip has no gray
 
 ## Done when
 
-- [ ] The exp bar renders as described above. Example: 40K exp (stage 20K–120K, 20%) renders `exp ▁▄▆█ 40K`, with `▁` purple and `▄▆█` gray.
+- [x] The exp bar renders as described above. Example: 40K exp (stage 20K–120K, 20%) renders `exp ▁▄▆█ 40K`, with `▁` purple and `▄▆█` gray.
 
-- [ ] Tests pass (`node --test` on the plugin tests).
+- [x] Tests pass (`node --test` on the plugin tests).
 
-- [ ] The change is committed on this branch.
+- [x] The change is committed on this branch.
