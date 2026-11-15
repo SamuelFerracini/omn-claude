@@ -28,10 +28,10 @@ Stop the false nag and stop this drift from happening again.
 
 ## Done when
 
-- [ ] `VERSION`, `plugin.json` (and `marketplace.json` if it has a version) all say `0.4.31`.
+- [x] `VERSION`, `plugin.json` (and `marketplace.json` if it has a version) all say `0.4.31`.
 
-- [ ] New test passes, and fails if you change one of the versions by hand.
+- [x] New test passes, and fails if you change one of the versions by hand.
 
-- [ ] All existing tests pass. `node --check plugin/claude/hooks/register.js` passes.
+- [x] All existing tests pass. `node --check plugin/claude/hooks/register.js` passes.
 
-- [ ] Changes committed on the branch.
+- [x] Changes committed on the branch.
