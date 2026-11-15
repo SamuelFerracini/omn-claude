@@ -471,12 +471,15 @@ test('rgbaOf is opaque RGBA', () => {
   for (let i = 3; i < b.length; i += 4) assert.equal(b[i], 255)
 })
 
-test('exp pips are full blocks that light quarter by quarter', () => {
+test('exp pips keep the staircase and grow the current pip in eighths, rounded down', () => {
   assert.deepEqual(pipGlyphs(0), [])
-  assert.deepEqual(pipGlyphs(10), ['█'])
-  assert.deepEqual(pipGlyphs(50), ['█', '█'])
-  assert.deepEqual(pipGlyphs(71.9), ['█', '█', '█'])
-  assert.deepEqual(pipGlyphs(100), ['█', '█', '█', '█'])
+  assert.deepEqual(pipGlyphs(1), ['▁'])
+  assert.deepEqual(pipGlyphs(20), ['▁'])
+  assert.deepEqual(pipGlyphs(24.9), ['▁'])
+  assert.deepEqual(pipGlyphs(25), ['▂'])
+  assert.deepEqual(pipGlyphs(50), ['▂', '▄'])
+  assert.deepEqual(pipGlyphs(62.5), ['▂', '▄', '▃'])
+  assert.deepEqual(pipGlyphs(100), ['▂', '▄', '▆', '█'])
 })
 
 function commandHook(name) {
