@@ -617,7 +617,7 @@ const pipChars = ['▂', '▄', '▆', '█']
 const cDim = '#8a86a0'
 const cExp = '#9d8cff'
 const cPulse = '#efeaff'
-const cOff = '#2a2640'
+const cOff = '#4a4566'
 const cText = '#e8e6f0'
 const cFed = '#f2b84b'
 const cWarn = '#ff5a36'
@@ -628,7 +628,8 @@ function meterText(Box, Text, growth) {
   const lit = signalLevel(pct)
   const pulse = pct > 85 && pct < 100 && tick % 8 < 4
   const on = pipChars.slice(0, lit)
-  const off = pipChars.slice(lit).join('')
+  // Unfilled pips are low ticks, so a tall dark block never reads as a broken bar.
+  const off = '▁'.repeat(pipChars.length - lit)
   const row = [Text({ color: cDim, children: ['exp'] })]
   if (pulse && on.length) {
     const head = on.slice(0, -1).join('')
