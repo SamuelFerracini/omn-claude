@@ -613,7 +613,9 @@ async function refresh($, growth) {
 }
 
 const stageAt = [0, 500, 20000, 120000, 500000]
-const pipChars = ['▂', '▄', '▆', '█']
+// Block heights in eighths, and the full height of each pip in the staircase.
+const pipLevels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+const pipHeights = [2, 4, 6, 8]
 const cDim = '#8a86a0'
 const cExp = '#9d8cff'
 const cPulse = '#efeaff'
@@ -625,11 +627,10 @@ const cWarn = '#ff5a36'
 function meterText(Box, Text, growth) {
   const g = typeof growth === 'number' && isFinite(growth) ? Math.max(0, Math.round(growth)) : 0
   const pct = expPct(g)
-  const lit = signalLevel(pct)
   const pulse = pct > 85 && pct < 100 && tick % 8 < 4
-  const on = pipChars.slice(0, lit)
+  const on = pipGlyphs(pct)
   // Unfilled pips are low ticks, so a tall dark block never reads as a broken bar.
-  const off = '▁'.repeat(pipChars.length - lit)
+  const off = '▁'.repeat(pipHeights.length - on.length)
   const row = [Text({ color: cDim, children: ['exp'] })]
   if (pulse && on.length) {
     const head = on.slice(0, -1).join('')
@@ -761,10 +762,19 @@ function expPct(g) {
   return v
 }
 
-function signalLevel(v) {
-  if (v <= 0) return 0
-  const n = Math.ceil(v / 25)
-  return n > 4 ? 4 : n
+// Each pip covers a quarter of the stage. Full pips stand at their staircase
+// height; the pip being filled grows from ▁ toward its height as exp comes in.
+export function pipGlyphs(v) {
+  const on = []
+  const span = 100 / pipHeights.length
+  for (let i = 0; i < pipHeights.length; i++) {
+    const lo = i * span
+    if (v <= lo) break
+    const frac = Math.min(1, (v - lo) / span)
+    const h = Math.max(1, Math.round(frac * pipHeights[i]))
+    on.push(pipLevels[h - 1])
+  }
+  return on
 }
 
 function compact(n) {

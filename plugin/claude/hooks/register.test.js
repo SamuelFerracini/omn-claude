@@ -1,7 +1,7 @@
 import test from 'node:test'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
-import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand } from './register.js'
+import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, pipGlyphs } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -469,4 +469,12 @@ test('rgbaOf is opaque RGBA', () => {
   const b = Uint8Array.from(Buffer.from(rgbaOf(spriteB64), 'base64'))
   assert.equal(b.length, 16 * 18 * 4)
   for (let i = 3; i < b.length; i += 4) assert.equal(b[i], 255)
+})
+
+test('exp pips fill bit by bit up the staircase', () => {
+  assert.deepEqual(pipGlyphs(0), [])
+  assert.deepEqual(pipGlyphs(10), ['▁'])
+  assert.deepEqual(pipGlyphs(50), ['▂', '▄'])
+  assert.deepEqual(pipGlyphs(71.9), ['▂', '▄', '▅'])
+  assert.deepEqual(pipGlyphs(100), ['▂', '▄', '▆', '█'])
 })
