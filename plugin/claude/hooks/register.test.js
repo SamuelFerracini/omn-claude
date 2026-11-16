@@ -1,7 +1,7 @@
 import test from 'node:test'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
-import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, sshHelpOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, pipGlyphs } from './register.js'
+import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, sshHelpOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, pipStates, pipRow, expPct } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -471,15 +471,38 @@ test('rgbaOf is opaque RGBA', () => {
   for (let i = 3; i < b.length; i += 4) assert.equal(b[i], 255)
 })
 
-test('exp pips keep the staircase and grow the current pip in eighths, rounded down', () => {
-  assert.deepEqual(pipGlyphs(0), [])
-  assert.deepEqual(pipGlyphs(1), ['▁'])
-  assert.deepEqual(pipGlyphs(20), ['▁'])
-  assert.deepEqual(pipGlyphs(24.9), ['▁'])
-  assert.deepEqual(pipGlyphs(25), ['▂'])
-  assert.deepEqual(pipGlyphs(50), ['▂', '▄'])
-  assert.deepEqual(pipGlyphs(62.5), ['▂', '▄', '▃'])
-  assert.deepEqual(pipGlyphs(100), ['▂', '▄', '▆', '█'])
+test('exp pips: fixed staircase, state per pip', () => {
+  const S = (v) => pipStates(v).map((s) => s[0]).join('')
+  assert.equal(S(0), 'oooo')
+  assert.equal(S(0.5), 'cooo')
+  assert.equal(S(24.9), 'cooo')
+  assert.equal(S(25), 'dcoo')
+  assert.equal(S(25.1), 'dcoo')
+  assert.equal(S(49.9), 'dcoo')
+  assert.equal(S(50), 'ddco')
+  assert.equal(S(74.9), 'ddco')
+  assert.equal(S(75), 'dddc')
+  assert.equal(S(99.9), 'dddc')
+  assert.equal(S(100), 'dddd')
+})
+
+test('exp quarter boundaries hold on real exp values', () => {
+  const S = (g) => pipStates(expPct(g)).map((s) => s[0]).join('')
+  assert.equal(S(25000 + 20000), 'dcoo')
+  assert.equal(S(70000), 'ddco')
+  assert.equal(S(95000), 'dddc')
+  assert.equal(S(500 + 4875), 'dcoo')
+})
+
+test('exp pip row: glyphs always full stairs, colors by state', () => {
+  const row = pipRow(27.6, false)
+  assert.equal(row.map((p) => p.glyph).join(''), '▂▄▆█')
+  assert.equal(row[0].color, '#9d8cff')
+  assert.equal(row[1].color, '#847abf')
+  assert.equal(row[2].color, '#6b6880')
+  assert.equal(pipRow(86, true)[3].color, '#efeaff')
+  assert.equal(pipRow(100, true)[3].color, '#9d8cff')
+  assert.ok(pipRow(0, false).every((p) => p.color === '#6b6880'))
 })
 
 function commandHook(name) {
