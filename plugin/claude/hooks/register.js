@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.31'
+const VERSION = '0.4.32'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -626,6 +626,8 @@ const cDim = '#8a86a0'
 const cExp = '#9d8cff'
 const cPulse = '#efeaff'
 const cTrack = '#6b6880'
+// Halfway between cExp and cTrack: the pip exp is in right now.
+const cMid = '#847abf'
 const cText = '#e8e6f0'
 const cFed = '#f2b84b'
 const cWarn = '#ff5a36'
@@ -634,17 +636,9 @@ function meterText(Box, Text, growth) {
   const g = typeof growth === 'number' && isFinite(growth) ? Math.max(0, Math.round(growth)) : 0
   const pct = expPct(g)
   const pulse = pct > 85 && pct < 100 && tick % 8 < 4
-  const on = pipGlyphs(pct)
-  const off = stairs.slice(on.length).join('')
   const row = [Text({ color: cDim, children: ['exp'] })]
-  if (pulse && on.length) {
-    const head = on.slice(0, -1).join('')
-    if (head) row.push(Text({ color: cExp, children: [head] }))
-    row.push(Text({ color: cPulse, children: [on[on.length - 1]] }))
-  } else if (on.length) {
-    row.push(Text({ color: cExp, children: [on.join('')] }))
-  }
-  if (off) row.push(Text({ color: cTrack, children: [off] }))
+  // One parent Text so columnGap never lands between the four pips.
+  row.push(Text({ children: pipRow(pct, pulse).map((p) => Text({ color: p.color, children: [p.glyph] })) }))
   row.push(Text({ color: cText, children: [compact(g)] }))
   const lines = []
   const name = cleanLabel(portrait && portrait.name, 32)
@@ -767,19 +761,27 @@ function expPct(g) {
   return v
 }
 
-// Each pip covers a quarter of the stage. Finished pips show full staircase
-// height. The current pip grows in eighths, rounded down (min one eighth), so
-// it only reaches full height when its quarter is done.
-export function pipGlyphs(v) {
-  if (!(v > 0)) return []
+// Each pip covers a quarter of the stage and always shows its full staircase
+// height. Only the state differs: 'done' (quarter finished), 'current' (exp is
+// inside the quarter) or 'off' (not reached).
+export function pipStates(v) {
   const size = 100 / stairs.length
-  const n = Math.min(stairs.length, Math.ceil(v / size))
-  const out = stairs.slice(0, n - 1)
-  const frac = Math.min(1, (v - (n - 1) * size) / size)
-  const h = Math.max(1, Math.floor(frac * pipHeights[n - 1] + 1e-9))
-  out.push(pipLevels[h - 1])
-  return out
+  // Small epsilon so exact quarter boundaries (25, 50, 75, 100) never lose to float error.
+  const done = (i) => v >= (i + 1) * size - 1e-9
+  // Current pip is the first unfinished one, while exp is strictly between 0 and 100.
+  const cur = v > 0 && v < 100 ? stairs.findIndex((_, i) => !done(i)) : -1
+  return stairs.map((_, i) => (done(i) ? 'done' : i === cur ? 'current' : 'off'))
 }
+
+export function pipRow(v, pulse) {
+  return pipStates(v).map((state, i) => ({
+    glyph: stairs[i],
+    state,
+    color: state === 'done' ? cExp : state === 'current' ? (pulse ? cPulse : cMid) : cTrack,
+  }))
+}
+
+export { expPct }
 
 function compact(n) {
   if (n >= 1000000000) return unit(n, 1000000000, 'B')

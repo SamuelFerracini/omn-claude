@@ -53,12 +53,12 @@ Run it and save the raw output (with ANSI) and the legend version via `save_note
 
 ## Done when
 
-- [ ] The bar never has a gap and always shows the full `▂▄▆█` shape.
+- [x] The bar never has a gap and always shows the full `▂▄▆█` shape.
 
-- [ ] The colors match the Goal for every preview case.
+- [x] The colors match the Goal for every preview case.
 
-- [ ] Tests pass (`node --test plugin/claude/hooks/` or the repo's test command).
+- [x] Tests pass (`node --test plugin/claude/hooks/` or the repo's test command).
 
-- [ ] Preview output saved with save_note, and the user has approved it.
+- [x] Preview output saved with save_note, and the user has approved it.
 
-- [ ] Plugin version bumped, and the work is committed on this branch.
+- [x] Plugin version bumped, and the work is committed on this branch.
