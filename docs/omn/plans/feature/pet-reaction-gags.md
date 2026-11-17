@@ -73,12 +73,12 @@ Rules:
 
 ## Done when
 
-- [ ] Each gag above has a test in `plugin/claude/hooks/register.test.js` that drives the event and checks the counter and the pixels. Use the existing test hook for the animation counters.
+- [x] Each gag above has a test in `plugin/claude/hooks/register.test.js` that drives the event and checks the counter and the pixels. Use the existing test hook for the animation counters.
 
-- [ ] Every test passes, old and new.
+- [x] Every test passes, old and new.
 
-- [ ] Each gag has been looked at in a real render with `plugin/claude/hooks/preview-exp-bar.js`, or a similar preview script, in all three render modes.
+- [x] Each gag has been looked at in a real render with `plugin/claude/hooks/preview-exp-bar.js`, or a similar preview script, in all three render modes.
 
-- [ ] The README lists the gags and the off toggle.
+- [x] The README lists the gags and the off toggle.
 
-- [ ] Work committed on the branch.
+- [x] Work committed on the branch.
