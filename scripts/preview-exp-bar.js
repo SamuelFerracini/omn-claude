@@ -1,5 +1,5 @@
-// Run: node plugin/claude/hooks/preview-exp-bar.js
-import { pipRow, expPct } from './register.js'
+// Run: node scripts/preview-exp-bar.js
+import { pipRow, expPct } from '../plugin/claude/hooks/register.js'
 
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(';')
 const L = { done: 'D', current: 'C', off: 'O' }

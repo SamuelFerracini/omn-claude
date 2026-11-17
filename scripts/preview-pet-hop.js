@@ -1,4 +1,4 @@
-// Run: node plugin/claude/hooks/preview-pet-hop.js [--old <git-ref>] [--all] [<petId | frames.json> ...]
+// Run: node scripts/preview-pet-hop.js [--old <git-ref>] [--all] [<petId | frames.json> ...]
 //
 // Shows each pose the plugin moves the pet through (hop, bite catch, chew,
 // drop-in) for the old register.js (default ref: main) next to this checkout.
@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import * as next from './register.js'
+import * as next from '../plugin/claude/hooks/register.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const helpers = ['liftPet', 'measure', 'shadeFoot']
@@ -27,7 +27,7 @@ for (let i = 0; i < args.length; i++) {
 // Load register.js from a git ref, exporting the motion helpers if that
 // version kept them private.
 async function loadOld(ref) {
-  let src = execFileSync('git', ['show', `${ref}:./register.js`], { cwd: here, encoding: 'utf8' })
+  let src = execFileSync('git', ['show', `${ref}:plugin/claude/hooks/register.js`], { cwd: here, encoding: 'utf8' })
   const missing = helpers.filter(
     (n) => new RegExp(`^function ${n}\\b`, 'm').test(src) && !new RegExp(`export\\s*\\{[^}]*\\b${n}\\b|export function ${n}\\b`).test(src),
   )
