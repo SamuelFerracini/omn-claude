@@ -1,1 +1,4 @@
 .worktrees
+
+# Omn Manager plans: local only, not published with the plugin marketplace.
+docs/omn/plans/
