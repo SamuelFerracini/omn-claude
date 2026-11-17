@@ -1,7 +1,7 @@
 import test from 'node:test'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
-import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, sshHelpOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, pipStates, pipRow, expPct, groundOf, floorAt, bodyMask, measure, liftPet, hop, shadeFoot } from './register.js'
+import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, sshHelpOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, pipStates, pipRow, expPct, groundOf, floorAt, bodyMask, measure, liftPet, hop } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -781,15 +781,20 @@ test('lowering a pet without band feet hides the rows behind the ground', () => 
   }
 })
 
-test('shadeFoot on band feet shades the ground, not other ground cells', () => {
-  const idle = petOnGround()
-  const m = measure(idle)
-  const buf = idle.slice()
-  liftPet(buf, 2)
-  shadeFoot(buf, idle, m)
-  const shade = [DIRT[0] - 12, DIRT[1] - 12, DIRT[2] - 8]
-  for (const x of [5, 6, 9, 10]) assert.deepEqual(at(buf, x, 16), shade)
-  for (const x of [7, 8]) assert.deepEqual(at(buf, x, 16), DIRT)
+test('a bite catch leaves no shadow where the feet stood', () => {
+  const b64 = Buffer.from(petOnGround()).toString('base64')
+  for (const tick of [1, 2, 3, 4]) {
+    __state({ bite: { mode: 'catch', tick: tick, xp: 1, kind: 'other' } })
+    const rgba = Buffer.from(rgbaOf(b64), 'base64')
+    for (let y = 15; y < 18; y++) {
+      for (let x = 0; x < 16; x++) {
+        const i = (y * 16 + x) * 4
+        const px = [rgba[i], rgba[i + 1], rgba[i + 2]]
+        assert.ok(String(px) === String(DIRT) || String(px) === String(PAW), `tick ${tick} pixel ${x},${y} is ${px}`)
+      }
+    }
+  }
+  __state({ bite: null })
 })
 
 test('a frame with no ground band lifts everything that is not sky', () => {

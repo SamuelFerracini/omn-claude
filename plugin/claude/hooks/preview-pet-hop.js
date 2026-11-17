@@ -28,7 +28,9 @@ for (let i = 0; i < args.length; i++) {
 // version kept them private.
 async function loadOld(ref) {
   let src = execFileSync('git', ['show', `${ref}:./register.js`], { cwd: here, encoding: 'utf8' })
-  const missing = helpers.filter((n) => !new RegExp(`export\\s*\\{[^}]*\\b${n}\\b|export function ${n}\\b`).test(src))
+  const missing = helpers.filter(
+    (n) => new RegExp(`^function ${n}\\b`, 'm').test(src) && !new RegExp(`export\\s*\\{[^}]*\\b${n}\\b|export function ${n}\\b`).test(src),
+  )
   if (missing.length) src += `\nexport { ${missing.join(', ')} }\n`
   const dir = mkdtempSync(join(tmpdir(), 'omn-preview-'))
   const file = join(dir, 'register.mjs')
@@ -69,22 +71,22 @@ async function source(input) {
 
 const decode = (b64) => new Uint8Array(Buffer.from(b64, 'base64'))
 
-// The same steps present() runs for a lift: move the pet, then shade the
-// spot it left when it rises.
+// The same steps present() runs for a lift. Only a bite catch shades the
+// spot the feet left, and only in versions that still have shadeFoot.
 const poses = [
-  ['idle', 0],
-  ['hop +2', 2],
-  ['catch +4', 4],
-  ['chew -2', -2],
-  ['drop +8', 8],
+  ['idle', 0, false],
+  ['hop +2', 2, false],
+  ['catch +4', 4, true],
+  ['chew -2', -2, false],
+  ['drop +8', 8, false],
 ]
 
-function pose(mod, idle, lift) {
+function pose(mod, idle, lift, bite) {
   const buf = idle.slice()
   if (!lift) return buf
   const m = mod.measure(idle)
   mod.liftPet(buf, lift)
-  if (lift > 0) mod.shadeFoot(buf, idle, m)
+  if (bite && mod.shadeFoot) mod.shadeFoot(buf, idle, m)
   return buf
 }
 
@@ -113,7 +115,7 @@ function show(label, idle, prev) {
   ]) {
     console.log(`  ${name}`)
     console.log(`  ${head}`)
-    const cols = poses.map(([, lift]) => rows(pose(mod, idle, lift)))
+    const cols = poses.map(([, lift, bite]) => rows(pose(mod, idle, lift, bite)))
     for (let r = 0; r < 9; r++) console.log('  ' + cols.map((c) => c[r]).join(gap))
   }
 }

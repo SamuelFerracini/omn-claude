@@ -454,6 +454,7 @@ export function __state(patch) {
     if ('evolveLeft' in patch) evolveLeft = patch.evolveLeft
     if ('petId' in patch) petId = patch.petId
     if ('keyPath' in patch) keyPath = patch.keyPath
+    if ('bite' in patch) bite = patch.bite
   }
   return { reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait, petId, arriveLeft, arriveFrom, arriveTo, arrivePhase: arriveLeft > 0 ? arrivePhase() : '', note, namePrompt }
 }
@@ -782,7 +783,7 @@ export function pipRow(v, pulse) {
 }
 
 export { expPct }
-export { groundOf, floorAt, bodyMask, measure, liftPet, hop, shadeFoot, petTop }
+export { groundOf, floorAt, bodyMask, measure, liftPet, hop, petTop }
 
 function compact(n) {
   if (n >= 1000000000) return unit(n, 1000000000, 'B')
@@ -1105,7 +1106,6 @@ function present(b64) {
   const hasChomp = !!(pose && pose.open && portrait && portrait.chomp)
   const buf = new Uint8Array(shown)
   if (pose && pose.lift) liftPet(buf, pose.lift)
-  if (pose && pose.lift > 0) shadeFoot(buf, idle, m)
   if (pose && pose.open && !hasChomp) dropMouth(buf, m, pose.lift)
   if (pose && pose.token != null) paintToken(buf, m.tx, pose.token, crumbRgb[bite.kind] || crumbRgb.other)
   if (liftNow()) hop(buf)
@@ -1476,8 +1476,6 @@ function measure(raw) {
   return {
     bg: bg,
     floor: floor,
-    groundC: groundOf(raw).c,
-    mask: mask,
     top: top,
     foot: foot,
     mouth: mouth,
@@ -1523,21 +1521,6 @@ function liftPet(buf, lift) {
       buf[di + 1] = copy[si + 1]
       buf[di + 2] = copy[si + 2]
     }
-  }
-}
-
-function shadeFoot(buf, idle, m) {
-  // Feet on the ground band shade the ground under them, not the sky.
-  const inBand = m.foot >= m.floor && m.groundC
-  const base = inBand ? m.groundC : m.bg
-  for (let x = m.minX; x <= m.maxX; x++) {
-    const id = m.foot * 16 + x
-    const i = id * 3
-    if (samePx(idle, i, m.bg)) continue
-    if (inBand && !m.mask[id]) continue
-    buf[i] = Math.max(0, base[0] - 12)
-    buf[i + 1] = Math.max(0, base[1] - 12)
-    buf[i + 2] = Math.max(0, base[2] - 8)
   }
 }
 
