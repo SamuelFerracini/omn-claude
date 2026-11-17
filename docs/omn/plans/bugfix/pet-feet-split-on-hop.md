@@ -44,11 +44,11 @@ When the plugin lifts or nudges the pet, every pet pixel moves together, includi
 
 ## Done when
 
-- [ ] New tests in `plugin/claude/hooks/register.test.js`:
+- [x] New tests in `plugin/claude/hooks/register.test.js`:
   - a frame whose feet sit on the ground band, after `hop()` / `liftPet(buf, 2)`, shows body and feet shifted together, with no pet pixel left behind on the ground, and the vacated ground cells restored to ground colour;
   - a frame with a non-ground patch in column 0 still finds the right ground line;
   - all existing tests still pass.
 
-- [ ] Plugin version bumped (plugin.json and VERSION match).
+- [x] Plugin version bumped (plugin.json and VERSION match).
 
-- [ ] Note for the user: check by hand in Claude Code that there is no gap between body and feet while the pet hops.
+- [x] Note for the user: check by hand in Claude Code that there is no gap between body and feet while the pet hops.

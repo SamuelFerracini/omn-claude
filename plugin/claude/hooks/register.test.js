@@ -1,7 +1,7 @@
 import test from 'node:test'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
-import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, sshHelpOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, pipStates, pipRow, expPct } from './register.js'
+import { register, handleStatus, petIdOf, sessionPetId, identityFilesOf, firstKeyOf, sshHelpOf, __state, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, pipStates, pipRow, expPct, groundOf, floorAt, bodyMask, measure, liftPet, hop, shadeFoot } from './register.js'
 
 function fake() {
   const data = new Map()
@@ -659,4 +659,137 @@ test('VERSION in register.js matches plugin.json', async () => {
   const m = src.match(/^const VERSION = '([^']+)'/m)
   assert.ok(m, 'VERSION constant not found in register.js')
   assert.equal(manifest.version, m[1])
+})
+
+// 16x18 RGB frame helpers for the motion tests.
+const SKY = [0x20, 0x24, 0x40]
+const DIRT = [0x5a, 0x40, 0x2a]
+const FUR = [0xd0, 0x90, 0x50]
+const PAW = [0x30, 0x20, 0x18]
+const TEAL = [0x2a, 0x8a, 0x80]
+
+function frame() {
+  const buf = new Uint8Array(16 * 18 * 3)
+  for (let y = 0; y < 18; y++) for (let x = 0; x < 16; x++) put(buf, x, y, y >= 15 ? DIRT : SKY)
+  return buf
+}
+
+function put(buf, x, y, c) {
+  const i = (y * 16 + x) * 3
+  buf[i] = c[0]
+  buf[i + 1] = c[1]
+  buf[i + 2] = c[2]
+}
+
+function at(buf, x, y) {
+  const i = (y * 16 + x) * 3
+  return [buf[i], buf[i + 1], buf[i + 2]]
+}
+
+// Body on rows 9..14, feet drawn on the ground band (rows 15..16).
+function petOnGround() {
+  const buf = frame()
+  for (let y = 9; y <= 14; y++) for (let x = 5; x <= 10; x++) put(buf, x, y, FUR)
+  for (const x of [5, 6, 9, 10]) {
+    put(buf, x, 15, PAW)
+    put(buf, x, 16, PAW)
+  }
+  return buf
+}
+
+test('ground band is found from whole rows', () => {
+  assert.equal(floorAt(petOnGround()), 15)
+  assert.deepEqual(groundOf(petOnGround()).c, DIRT)
+})
+
+test('a non-ground patch in column 0 does not move the ground line', () => {
+  // Patch only on the bottom rows: column 0 alone would put the line at 16.
+  const low = petOnGround()
+  for (let y = 16; y < 18; y++) {
+    put(low, 0, y, TEAL)
+    put(low, 1, y, TEAL)
+  }
+  assert.equal(floorAt(low), 15)
+  assert.deepEqual(groundOf(low).c, DIRT)
+  // The patch is scene, not pet: it touches neither the body nor the feet.
+  const mask = bodyMask(low, 15, SKY)
+  for (let y = 15; y < 18; y++) for (let x = 0; x < 2; x++) assert.equal(mask[y * 16 + x], 0)
+  // Patch rising above the ground: column 0 alone would put the line at 13.
+  const tall = petOnGround()
+  for (let y = 13; y < 18; y++) put(tall, 0, y, TEAL)
+  assert.equal(floorAt(tall), 15)
+})
+
+test('feet on the ground band are part of the pet, ground texture is not', () => {
+  const buf = petOnGround()
+  put(buf, 13, 16, PAW) // a pebble that does not touch the pet
+  const mask = bodyMask(buf, floorAt(buf), SKY)
+  for (const x of [5, 6, 9, 10]) {
+    assert.equal(mask[15 * 16 + x], 1)
+    assert.equal(mask[16 * 16 + x], 1)
+  }
+  assert.equal(mask[16 * 16 + 13], 0)
+  assert.equal(mask[15 * 16 + 7], 0)
+  assert.equal(measure(buf).foot, 16)
+})
+
+for (const [name, move] of [
+  ['liftPet(buf, 2)', (b) => liftPet(b, 2)],
+  ['hop()', (b) => hop(b)],
+]) {
+  test(`${name} moves body and ground-band feet together`, () => {
+    const before = petOnGround()
+    put(before, 13, 16, PAW)
+    const buf = before.slice()
+    move(buf)
+    for (let y = 0; y < 18; y++) {
+      for (let x = 0; x < 16; x++) {
+        const src = y + 2
+        const wasPet = src < 18 && ((src >= 9 && src <= 14 && x >= 5 && x <= 10) || ((src === 15 || src === 16) && [5, 6, 9, 10].includes(x)))
+        let want
+        if (wasPet) want = at(before, x, src)
+        else if (x === 13 && y === 16) want = PAW
+        else want = y >= 15 ? DIRT : SKY
+        assert.deepEqual(at(buf, x, y), want, `pixel ${x},${y}`)
+      }
+    }
+    // No paw left behind on the ground under the pet.
+    for (const x of [5, 6, 9, 10]) assert.deepEqual(at(buf, x, 16), DIRT)
+  })
+}
+
+test('lowering the pet keeps the ground in front and band feet on it', () => {
+  const buf = petOnGround()
+  liftPet(buf, -1)
+  // Body row 14 would drop into the band: hidden behind the ground.
+  for (let x = 7; x <= 8; x++) assert.deepEqual(at(buf, x, 15), DIRT)
+  // Feet move down one row inside the band; vacated cells are ground.
+  for (const x of [5, 6, 9, 10]) {
+    assert.deepEqual(at(buf, x, 17), PAW)
+    assert.deepEqual(at(buf, x, 16), PAW)
+  }
+  assert.deepEqual(at(buf, 5, 9), SKY)
+  assert.deepEqual(at(buf, 5, 10), FUR)
+})
+
+test('shadeFoot on band feet shades the ground, not other ground cells', () => {
+  const idle = petOnGround()
+  const m = measure(idle)
+  const buf = idle.slice()
+  liftPet(buf, 2)
+  shadeFoot(buf, idle, m)
+  const shade = [DIRT[0] - 12, DIRT[1] - 12, DIRT[2] - 8]
+  for (const x of [5, 6, 9, 10]) assert.deepEqual(at(buf, x, 16), shade)
+  for (const x of [7, 8]) assert.deepEqual(at(buf, x, 16), DIRT)
+})
+
+test('a frame with no ground band lifts everything that is not sky', () => {
+  const buf = frame()
+  for (let y = 0; y < 18; y++) for (let x = 0; x < 16; x++) put(buf, x, y, SKY)
+  for (let y = 12; y < 18; y++) put(buf, 7, y, FUR)
+  assert.equal(floorAt(buf), 18)
+  liftPet(buf, 2)
+  assert.deepEqual(at(buf, 7, 17), SKY)
+  assert.deepEqual(at(buf, 7, 10), FUR)
+  assert.deepEqual(at(buf, 7, 15), FUR)
 })

@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.32'
+const VERSION = '0.4.33'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -782,6 +782,7 @@ export function pipRow(v, pulse) {
 }
 
 export { expPct }
+export { groundOf, floorAt, bodyMask, measure, liftPet, hop, shadeFoot, petTop }
 
 function compact(n) {
   if (n >= 1000000000) return unit(n, 1000000000, 'B')
@@ -1333,17 +1334,39 @@ function samePx(raw, i, c) {
   return raw[i] === c[0] && raw[i + 1] === c[1] && raw[i + 2] === c[2]
 }
 
-function floorAt(raw) {
-  const row = 16 * 3
-  const last = 17 * row
-  const floorC = [raw[last], raw[last + 1], raw[last + 2]]
+// The ground band: the bottom rows where most pixels share one color.
+// Whole rows are read, so a scene patch or a foot at the left edge does
+// not move the line. A pet pixel that happens to match the ground color
+// cannot make a row count as ground either, or the body splits.
+function groundOf(raw) {
   const bg = bgOf(raw)
-  if (floorC[0] === bg[0] && floorC[1] === bg[1] && floorC[2] === bg[2]) return 18
-  // Walk up from the ground. A pet pixel that happens to match the ground
-  // color must not be treated as the floor, or the body splits.
+  const count = new Map()
+  for (let x = 0; x < 16; x++) {
+    const c = rgb(raw, (17 * 16 + x) * 3)
+    count.set(c, (count.get(c) || 0) + 1)
+  }
+  let c = -1
+  let best = 0
+  for (const [k, n] of count) {
+    if (n > best) {
+      c = k
+      best = n
+    }
+  }
+  const none = { floor: 18, c: null }
+  if (best * 2 <= 16 || c === rgb(bg, 0)) return none
+  const groundRow = (y) => {
+    let n = 0
+    for (let x = 0; x < 16; x++) if (rgb(raw, (y * 16 + x) * 3) === c) n++
+    return n * 2 > 16
+  }
   let floor = 17
-  while (floor > 0 && raw[floor * row] === floorC[0] && raw[floor * row + 1] === floorC[1] && raw[floor * row + 2] === floorC[2]) floor--
-  return floor + 1
+  while (floor > 0 && groundRow(floor - 1)) floor--
+  return { floor: floor, c: [c >> 16, (c >> 8) & 255, c & 255] }
+}
+
+function floorAt(raw) {
+  return groundOf(raw).floor
 }
 
 // True when the sharp color changes sit on the boundary between two cells.
@@ -1353,7 +1376,7 @@ function seamSplit(buf) {
   const mask = bodyMask(buf, floor, bg)
   let split = 0
   let joined = 0
-  for (let y = 0; y < floor - 1; y++) {
+  for (let y = 0; y < 17; y++) {
     for (let x = 0; x < 16; x++) {
       if (!mask[y * 16 + x]) continue
       for (let dx = -1; dx <= 1; dx++) {
@@ -1378,13 +1401,38 @@ const stayPut = new Set([
   0x4a4580, 0x7a6870, 0x885050, 0x4a6aa0, 0x343e56, 0xe07024, 0x843a22, 0x9a96a8,
 ])
 
+// Pet pixels over the whole 16x18 frame. Above the floor, every pixel that is
+// not bg or a scene effect. In the ground band, only pixels that are not
+// ground, bg, or a scene effect and that touch the pet (8 neighbours), so feet
+// drawn on the ground move with the body and ground texture stays put.
 function bodyMask(raw, floor, bg) {
-  const mask = new Uint8Array(floor * 16)
+  const mask = new Uint8Array(18 * 16)
+  const pet = (i) => !samePx(raw, i, bg) && !stayPut.has(rgb(raw, i))
+  const queue = []
   for (let y = 0; y < floor; y++) {
     for (let x = 0; x < 16; x++) {
-      const i = (y * 16 + x) * 3
-      if (samePx(raw, i, bg) || stayPut.has(rgb(raw, i))) continue
+      if (!pet((y * 16 + x) * 3)) continue
       mask[y * 16 + x] = 1
+      if (y >= floor - 1) queue.push(y * 16 + x)
+    }
+  }
+  if (floor >= 18) return mask
+  const ground = groundOf(raw).c
+  while (queue.length) {
+    const id = queue.pop()
+    const y = Math.floor(id / 16)
+    const x = id % 16
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const ny = y + dy
+        const nx = x + dx
+        if (ny < floor || ny >= 18 || nx < 0 || nx >= 16) continue
+        const nid = ny * 16 + nx
+        const i = nid * 3
+        if (mask[nid] || !pet(i) || (ground && samePx(raw, i, ground))) continue
+        mask[nid] = 1
+        queue.push(nid)
+      }
     }
   }
   return mask
@@ -1394,11 +1442,11 @@ function measure(raw) {
   const bg = bgOf(raw)
   const floor = floorAt(raw)
   const mask = bodyMask(raw, floor, bg)
-  let top = floor
+  let top = 18
   let foot = 0
   let minX = 16
   let maxX = 0
-  for (let y = 0; y < floor; y++) {
+  for (let y = 0; y < 18; y++) {
     for (let x = 0; x < 16; x++) {
       if (!mask[y * 16 + x]) continue
       if (y < top) top = y
@@ -1407,7 +1455,7 @@ function measure(raw) {
       if (x > maxX) maxX = x
     }
   }
-  if (top >= floor) {
+  if (top >= 18) {
     top = 4
     foot = Math.max(4, floor - 2)
     minX = 4
@@ -1428,6 +1476,8 @@ function measure(raw) {
   return {
     bg: bg,
     floor: floor,
+    groundC: groundOf(raw).c,
+    mask: mask,
     top: top,
     foot: foot,
     mouth: mouth,
@@ -1442,21 +1492,26 @@ function measure(raw) {
 function liftPet(buf, lift) {
   const copy = buf.slice()
   const bg = bgOf(copy)
-  const floor = floorAt(copy)
+  const { floor, c: ground } = groundOf(copy)
   const mask = bodyMask(copy, floor, bg)
-  for (let y = 0; y < floor; y++) {
+  // Clear the pet: ground color where it stood in the ground band, bg above.
+  for (let y = 0; y < 18; y++) {
+    const fill = y >= floor && ground ? ground : bg
     for (let x = 0; x < 16; x++) {
       const id = y * 16 + x
       if (!mask[id]) continue
       const i = id * 3
-      buf[i] = bg[0]
-      buf[i + 1] = bg[1]
-      buf[i + 2] = bg[2]
+      buf[i] = fill[0]
+      buf[i + 1] = fill[1]
+      buf[i + 2] = fill[2]
     }
   }
-  for (let y = 0; y < floor; y++) {
+  // The ground stays in front: body rows lowered into the band are hidden,
+  // feet already in the band keep showing.
+  for (let y = 0; y < 18; y++) {
     const src = y + lift
-    if (src < 0 || src >= floor) continue
+    if (src < 0 || src >= 18) continue
+    if (y >= floor && src < floor) continue
     for (let x = 0; x < 16; x++) {
       const sid = src * 16 + x
       if (!mask[sid]) continue
@@ -1470,12 +1525,17 @@ function liftPet(buf, lift) {
 }
 
 function shadeFoot(buf, idle, m) {
+  // Feet on the ground band shade the ground under them, not the sky.
+  const inBand = m.foot >= m.floor && m.groundC
+  const base = inBand ? m.groundC : m.bg
   for (let x = m.minX; x <= m.maxX; x++) {
-    const i = (m.foot * 16 + x) * 3
+    const id = m.foot * 16 + x
+    const i = id * 3
     if (samePx(idle, i, m.bg)) continue
-    buf[i] = Math.max(0, m.bg[0] - 12)
-    buf[i + 1] = Math.max(0, m.bg[1] - 12)
-    buf[i + 2] = Math.max(0, m.bg[2] - 8)
+    if (inBand && !m.mask[id]) continue
+    buf[i] = Math.max(0, base[0] - 12)
+    buf[i + 1] = Math.max(0, base[1] - 12)
+    buf[i + 2] = Math.max(0, base[2] - 8)
   }
 }
 
@@ -1552,7 +1612,7 @@ function petTop(buf) {
   const bg = bgOf(buf)
   const floor = floorAt(buf)
   const mask = bodyMask(buf, floor, bg)
-  for (let y = 0; y < floor; y++) {
+  for (let y = 0; y < 18; y++) {
     for (let x = 0; x < 16; x++) if (mask[y * 16 + x]) return y
   }
   return -1
