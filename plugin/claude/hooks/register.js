@@ -1506,12 +1506,14 @@ function liftPet(buf, lift) {
       buf[i + 2] = fill[2]
     }
   }
-  // The ground stays in front: body rows lowered into the band are hidden,
-  // feet already in the band keep showing.
+  // A pet with feet on the band stands in front of the ground, so a lowered
+  // body stays joined to its feet. Otherwise the ground stays in front and
+  // body rows lowered into the band are hidden.
+  const onBand = mask.subarray(floor * 16).some((v) => v)
   for (let y = 0; y < 18; y++) {
     const src = y + lift
     if (src < 0 || src >= 18) continue
-    if (y >= floor && src < floor) continue
+    if (y >= floor && src < floor && !onBand) continue
     for (let x = 0; x < 16; x++) {
       const sid = src * 16 + x
       if (!mask[sid]) continue

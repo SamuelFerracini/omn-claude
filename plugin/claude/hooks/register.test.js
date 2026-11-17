@@ -758,18 +758,27 @@ for (const [name, move] of [
   })
 }
 
-test('lowering the pet keeps the ground in front and band feet on it', () => {
+test('lowering a pet with band feet keeps body and feet joined', () => {
   const buf = petOnGround()
-  liftPet(buf, -1)
-  // Body row 14 would drop into the band: hidden behind the ground.
-  for (let x = 7; x <= 8; x++) assert.deepEqual(at(buf, x, 15), DIRT)
-  // Feet move down one row inside the band; vacated cells are ground.
-  for (const x of [5, 6, 9, 10]) {
-    assert.deepEqual(at(buf, x, 17), PAW)
-    assert.deepEqual(at(buf, x, 16), PAW)
+  liftPet(buf, -2)
+  // Body rows 9..14 move to 11..16, in front of the ground; no ground row
+  // opens between body and feet.
+  for (let y = 11; y <= 16; y++) for (let x = 5; x <= 10; x++) assert.deepEqual(at(buf, x, y), FUR, `pixel ${x},${y}`)
+  // Feet move down to row 17; the rest of the frame drops off the bottom.
+  for (const x of [5, 6, 9, 10]) assert.deepEqual(at(buf, x, 17), PAW)
+  for (const x of [7, 8]) assert.deepEqual(at(buf, x, 17), DIRT)
+  assert.deepEqual(at(buf, 5, 10), SKY)
+})
+
+test('lowering a pet without band feet hides the rows behind the ground', () => {
+  const buf = frame()
+  for (let y = 9; y <= 14; y++) for (let x = 5; x <= 10; x++) put(buf, x, y, FUR)
+  liftPet(buf, -2)
+  for (let x = 5; x <= 10; x++) {
+    assert.deepEqual(at(buf, x, 14), FUR)
+    assert.deepEqual(at(buf, x, 15), DIRT)
+    assert.deepEqual(at(buf, x, 10), SKY)
   }
-  assert.deepEqual(at(buf, 5, 9), SKY)
-  assert.deepEqual(at(buf, 5, 10), FUR)
 })
 
 test('shadeFoot on band feet shades the ground, not other ground cells', () => {
