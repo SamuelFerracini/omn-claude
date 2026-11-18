@@ -81,9 +81,6 @@ export function register(on) {
     const savedPet = await $.store.get('petId')
     petId = petIdOf(savedPet)
     gagsOn = (await $.store.get('gags')) !== 'off'
-    try {
-      wearModel(await $.session.model())
-    } catch (err) {}
     $.clock.every(100, () => stepFrame($))
     $.clock.every(30000, () => {
       if (!sessionLive) return
@@ -233,7 +230,6 @@ export function register(on) {
 
   on('turn.step', async function* ($, e, next) {
     const main = e.agentId === undefined
-    if (main) wearModel(e.model)
     // The first streamed chunk of the main loop ends the thinking dots.
     const result = yield* (main ? onFirst(next(e), endThink) : next(e))
     tally(e, result)
@@ -273,12 +269,6 @@ export function register(on) {
     } finally {
       releaseGag(g)
     }
-  })
-
-  on('session.model', async ($, e, next) => {
-    const model = await next(e)
-    wearModel(model)
-    return model
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -525,14 +515,13 @@ export function __state(patch) {
     if ('gag' in patch) gag = patch.gag
     if ('gagNext' in patch) gagNext = patch.gagNext
     if ('gagsOn' in patch) gagsOn = patch.gagsOn
-    if ('outfit' in patch) outfit = patch.outfit
     if ('hour' in patch) gagHour = patch.hour
     if ('failRun' in patch) failRun = patch.failRun
     if ('meals' in patch) [mealAvg, mealN] = patch.meals
   }
   return {
     reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait, petId, arriveLeft, arriveFrom, arriveTo, arrivePhase: arriveLeft > 0 ? arrivePhase() : '', note, namePrompt,
-    gag, gagNext: gagNext && gagNext.g, gagsOn, outfit, failRun, slowLeft, mealAvg, mealN, busy: !!busy(),
+    gag, gagNext: gagNext && gagNext.g, gagsOn, failRun, slowLeft, mealAvg, mealN, busy: !!busy(),
   }
 }
 export { setRenderEnv, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, stepFrame, startGag, releaseGag, eyesOf }
@@ -1687,8 +1676,8 @@ function petTop(buf) {
 // Short reactions to what Claude does, drawn over the idle frames like hop and
 // sparkle. One transient gag runs at a time (gag) and one more may wait
 // (gagNext); a higher priority gag replaces the running one, a lower one waits
-// up to gagWait ticks or is dropped. The model outfit and the nightcap are
-// persistent and draw under it. A scene (wake, revive, arrive, evolve, gleam)
+// up to gagWait ticks or is dropped. The nightcap is persistent and draws
+// under it. A scene (wake, revive, arrive, evolve, gleam)
 // drops every gag. During a bite the bite owns the body: a gag draws its
 // overlays on the moved sprite but none of its own body motion.
 let gagsOn = true
@@ -1696,7 +1685,6 @@ let gag = null
 let gagNext = null
 let thinking = null
 let failRun = 0
-let outfit = ''
 let gagHour = null
 let mealAvg = 0
 let mealN = 0
@@ -1705,8 +1693,8 @@ let frameTick = 0
 const gagPrio = { think: 1, prop: 2, confetti: 3, burp: 4, horror: 4, flinch: 5, facepalm: 6, squish: 6, dizzy: 7 }
 // Ticks (100ms) a gag plays once nothing holds it.
 const gagLen = { think: 0, prop: 10, confetti: 14, burp: 15, horror: 15, flinch: 8, facepalm: 15, squish: 10, dizzy: 20 }
-// What a gag covers, so the outfit and the nightcap step aside.
-const gagSlots = { think: 'head', dizzy: 'head', horror: 'head face', facepalm: 'face', hat: 'head', lens: 'face', binoculars: 'face' }
+// The gags that cover the head, so the nightcap steps aside.
+const headGags = new Set(['think', 'dizzy', 'horror', 'hat'])
 // Gags that are not worn, so an egg plays them too.
 const eggGags = new Set(['think', 'flinch', 'dizzy', 'squish', 'confetti', 'burp', 'horror'])
 const thinkCap = 600
@@ -1889,12 +1877,6 @@ function bigMeal(xp) {
   return big
 }
 
-function wearModel(model) {
-  if (typeof model !== 'string' || !model) return
-  const f = family(model)
-  outfit = f === 'other' ? '' : f
-}
-
 async function gagsCommand($, arg) {
   if (arg === 'on' || arg === 'off') {
     gagsOn = arg === 'on'
@@ -1928,13 +1910,13 @@ function stepConfetti(g) {
   }
 }
 
-// paintGags draws the persistent outfit and nightcap, then the running gag.
+// paintGags draws the persistent nightcap, then the running gag.
 // m is the idle frame's measure (before any lift).
 function paintGags(buf, m0) {
   if (!gagsOn || !portrait || sceneOn() || !petAwake()) return
   const egg = petEgg()
   const g = gagShown() ? gag : null
-  if (!g && (egg || (!outfit && !lateNight()))) return
+  if (!g && (egg || !lateNight())) return
   // A bite, hop or seam nudge may have moved the sprite: measure it as it is now.
   // The mouth comes from the idle frame (its chomp diff), shifted along.
   let dx = 0
@@ -1948,13 +1930,7 @@ function paintGags(buf, m0) {
   const fixed = petEyes(portrait)
   const eyes = fixed ? { y: m.top + fixed.ry, lx: fixed.lx + dx, rx: fixed.rx + dx, w: fixed.w, found: true } : eyesOf(buf, m, mask)
   const k = { buf, m, mask, mouth: m0.mouth + (m.top - m0.top), eyes, head: headSpan(m, mask) }
-  const slots = (g && (gagSlots[g.prop] || gagSlots[g.kind])) || ''
-  if (!egg) {
-    if (lateNight() && !slots.includes('head')) nightcap(k)
-    if (outfit === 'opus' && !slots.includes('face')) monocle(k)
-    if (outfit === 'sonnet') scarf(k)
-    if (outfit === 'haiku') streak(k)
-  }
+  if (!egg && lateNight() && !(g && (headGags.has(g.kind) || headGags.has(g.prop)))) nightcap(k)
   if (g) gagOverlay(k, g)
 }
 
@@ -2310,14 +2286,6 @@ function lens(k) {
   paint(k.buf, rx + 3, y + 3, pxFed)
 }
 
-function monocle(k) {
-  const { y, rx } = k.eyes
-  paint(k.buf, rx, y - 1, pxGold)
-  paint(k.buf, rx + 1, y - 1, pxGold)
-  paint(k.buf, rx + 1, y, pxGold)
-  paint(k.buf, rx + 1, y + 2, pxGold)
-}
-
 // A pencil beside the body, tip by the mouth, scribbling up and down.
 function pencil(k, g) {
   const { m } = k
@@ -2438,32 +2406,6 @@ function horror(k) {
   paint(k.buf, x, top - 3, pxWarn)
   paint(k.buf, x, top - 2, pxWarn)
   paint(k.buf, x, top, pxWarn)
-}
-
-function scarf(k) {
-  const { buf, m, mask } = k
-  const y = Math.max(m.top + 1, Math.min(m.foot - 1, k.mouth + 2))
-  const [a, b] = rowSpan(mask, y)
-  if (b < a) return
-  for (let x = a; x <= b; x++) paint(buf, x, y, pxFed)
-  if (b < 15) {
-    paint(buf, b + 1, y, pxFed)
-    paint(buf, b + 1, y + 1, pxWarn)
-  }
-}
-
-// Speed lines trailing on the left, on background pixels only.
-function streak(k) {
-  const { buf, m, mask } = k
-  const rows = [m.top + 2, Math.round((m.top + m.foot) / 2), m.foot - 1]
-  rows.forEach((y, i) => {
-    const [a] = rowSpan(mask, y)
-    if (a >= 16) return
-    for (let j = 1 + (i % 2); j <= 2 + (i % 2); j++) {
-      const x = a - j
-      if (x >= 0 && !maskAt(mask, x, y) && samePx(buf, (y * 16 + x) * 3, bgOf(buf))) paint(buf, x, y, pxSky)
-    }
-  })
 }
 
 // Wraps a step's chunk stream so fn runs once, on the first chunk.

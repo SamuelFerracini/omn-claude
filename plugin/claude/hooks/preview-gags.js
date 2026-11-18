@@ -33,9 +33,6 @@ const gags = {
   squish: { start: () => startGag({ kind: 'squish', held: 1 }), at: [0, 1, 5, 10, 11, 12, 13, 14], release: 5 },
   confetti: { start: () => startGag({ kind: 'confetti' }), at: [0, 3, 7, 11] },
   horror: { start: () => startGag({ kind: 'horror' }), at: [0, 1, 4] },
-  opus: { start: () => __state({ outfit: 'opus' }), at: [0] },
-  sonnet: { start: () => __state({ outfit: 'sonnet' }), at: [0] },
-  haiku: { start: () => __state({ outfit: 'haiku' }), at: [0] },
   nightcap: { start: () => __state({ hour: 2 }), at: [0] },
   idle: { start: () => null, at: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
 }
@@ -60,7 +57,7 @@ const $ = { ui: { invalidate() {} } }
 function play(payload, name) {
   const spec = gags[name]
   resetPortraitState()
-  __state({ portrait: { ...payload, status: 'awake' }, outfit: '', hour: 12, failRun: 0, gagsOn: true })
+  __state({ portrait: { ...payload, status: 'awake' }, hour: 12, failRun: 0, gagsOn: true })
   const g = spec.start()
   const shots = []
   // The idle frames advance one per tick, as in the pane.

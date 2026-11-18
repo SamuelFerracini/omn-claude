@@ -47,7 +47,7 @@ Gags, in priority order:
 
 6. **Compact squish** (`session.compact`): the sprite squashes to about 60% height, holds, then springs back with a small overshoot.
 
-7. **Model outfit** (`session.model` / the turn model): Opus gets a monocle, Sonnet a scarf, Haiku a speed streak behind it. The outfit is persistent and subtle.
+7. ~~**Model outfit**~~: dropped at the user's request (no monocle, scarf or speed lines).
 
 8. **Git moments**: a Bash call whose command contains `git commit` gives a confetti burst. One with `git push --force` or `-f` gives a horrified face (wide eyes) for about 1.5s.
 

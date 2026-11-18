@@ -863,7 +863,7 @@ const topOf = () => {
 }
 function gagSetup(over = {}) {
   resetPortraitState()
-  __state({ portrait: { frames: [gagPet], growth: 25000, name: 'Gag', status: 'awake', ...over }, outfit: '', hour: 12, gagsOn: true, failRun: 0, bite: null })
+  __state({ portrait: { frames: [gagPet], growth: 25000, name: 'Gag', status: 'awake', ...over }, hour: 12, gagsOn: true, failRun: 0, bite: null })
 }
 function allHooks() {
   const out = {}
@@ -1038,7 +1038,7 @@ test('gag 4, abort dizzy: turn.abort or an aborted turn skids, then stars orbit 
 
 test('gag 5, big meal: a turn 3x the usual bulges the belly, says burp!, then slows the bob', async () => {
   freshPet({ portrait: { frames: [gagPet], growth: 25000, name: 'Gag', status: 'awake' } })
-  __state({ outfit: '', hour: 12, gagsOn: true, meals: [100, 3] })
+  __state({ hour: 12, gagsOn: true, meals: [100, 3] })
   const h = allHooks()
   const host = server({})
   // 30000 opus output tokens = 1200 xp, 12x the 100 xp average
@@ -1099,39 +1099,7 @@ test('gag 6, compact squish: squashes to ~60% while compacting, then springs bac
   assert.equal(__state().gag, null)
 })
 
-test('gag 7, model outfit: opus monocle, sonnet scarf, haiku speed streak, from the main loop model', async () => {
-  gagSetup()
-  const h = allHooks()
-  async function* none() {
-    return { turnId: 't', index: 0, text: '' }
-  }
-  const step = async (model, agentId) => {
-    const gen = h['turn.step']({}, { turnId: 't', index: 0, model, messageCount: 1, agentId }, () => none())
-    while (!(await gen.next()).done);
-  }
-  await step('claude-opus-4-1')
-  assert.equal(__state().outfit, 'opus')
-  assert.deepEqual([pxAt(10, 8), pxAt(11, 8), pxAt(11, 9)], [G.gold, G.gold, G.gold])
-  await step('claude-haiku-4-5', 'sub')
-  assert.equal(__state().outfit, 'opus', 'a subagent model is not worn')
-  await step('claude-sonnet-4-5')
-  assert.equal(__state().outfit, 'sonnet')
-  const m = measure(Buffer.from(gagPet, 'base64'))
-  const y = Math.min(m.foot - 1, m.mouth + 2)
-  assert.deepEqual([pxAt(3, y), pxAt(12, y), pxAt(13, y + 1)], [G.fed, G.fed, G.warn])
-  assert.equal(await h['session.model']({}, {}, async () => 'claude-haiku-4-5'), 'claude-haiku-4-5')
-  assert.equal(__state().outfit, 'haiku')
-  // dashes left of the body, staggered: x 1-2 on row 8, x 0-1 on row 10
-  assert.deepEqual([pxAt(2, 8), pxAt(1, 8), pxAt(0, 8)], [G.sky, G.sky, G.bg])
-  assert.deepEqual([pxAt(2, 10), pxAt(1, 10), pxAt(0, 10)], [G.bg, G.sky, G.sky])
-  assert.equal(__state().busy, false, 'an outfit alone keeps the pet idle')
-  // never on an egg
-  gagSetup({ growth: 0 })
-  __state({ outfit: 'sonnet' })
-  assert.deepEqual(pxAt(3, y), G.line)
-})
-
-test('gag 8, git moments: a commit throws confetti after it lands; a force push horrifies', async () => {
+test('gag 7, git moments: a commit throws confetti after it lands; a force push horrifies', async () => {
   assert.equal(gitCommit('git add -A && git commit -m "x"'), true)
   assert.equal(gitCommit('git -C repo commit --amend'), true)
   assert.equal(gitCommit('git log --grep commit'), false)
@@ -1168,7 +1136,7 @@ test('gag 8, git moments: a commit throws confetti after it lands; a force push 
   assert.equal(__state().gag.kind, 'prop', 'the queued hat plays after')
 })
 
-test('gag 9, late night: a nightcap from 00:00 to 05:00', () => {
+test('gag 8, late night: a nightcap from 00:00 to 05:00', () => {
   gagSetup()
   assert.deepEqual(pxAt(5, 5), G.bg)
   for (const hour of [0, 2, 4]) {
@@ -1176,6 +1144,7 @@ test('gag 9, late night: a nightcap from 00:00 to 05:00', () => {
     assert.deepEqual(pxAt(5, 5), G.text, 'trim at ' + hour)
     assert.deepEqual(pxAt(6, 4), G.exp)
   }
+  assert.equal(__state().busy, false, 'the nightcap alone keeps the pet idle')
   __state({ hour: 5 })
   assert.deepEqual(pxAt(5, 5), G.bg)
   // a gag on the head takes the slot
@@ -1242,24 +1211,24 @@ test('gags: busy while a gag runs, idle once it ends', () => {
   assert.equal(__state().busy, false)
 })
 
-test('/omn gags off turns every gag and the outfit off, on brings them back', async () => {
+test('/omn gags off turns every gag and the nightcap off, on brings them back', async () => {
   gagSetup()
   const host = server({})
   const omn = allHooks()['command.run:omn']
   assert.deepEqual(await omn(host.$, { args: 'gags' }), { text: 'omn gags on' })
-  __state({ outfit: 'opus' })
+  __state({ hour: 2 })
   startGag({ kind: 'dizzy' })
   assert.deepEqual(await omn(host.$, { args: 'gags off' }), { text: 'omn gags off' })
   assert.equal(host.data.get('gags'), 'off')
   let st = __state()
   assert.equal(st.gag, null)
   assert.equal(startGag({ kind: 'dizzy' }), null)
-  assert.deepEqual(pxAt(10, 8), G.fill, 'no monocle')
+  assert.deepEqual(pxAt(5, 5), G.bg, 'no nightcap')
   assert.deepEqual(await omn(host.$, { args: 'gags on' }), { text: 'omn gags on' })
   assert.equal(host.data.get('gags'), 'on')
-  assert.deepEqual(pxAt(10, 8), G.gold)
+  assert.deepEqual(pxAt(5, 5), G.text)
   assert.deepEqual(await omn(host.$, { args: 'gags maybe' }), { text: 'usage: /omn gags on|off' })
-  __state({ outfit: '' })
+  __state({ hour: 12 })
 })
 
 test('gags: the three render modes draw the same gag pixels', () => {

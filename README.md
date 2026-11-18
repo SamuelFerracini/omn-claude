@@ -30,8 +30,7 @@ The pet reacts to what Claude does with short pixel gags, drawn by the plugin ov
 - **Abort**: interrupt a turn and it skids to a stop while stars circle its head.
 - **Big meal**: a turn far above its usual XP bulges its belly, shows `burp!` by its name, then its bob slows for a few seconds.
 - **Compact**: it squashes flat while the conversation compacts, then springs back.
-- **Model outfit**: a monocle for Opus, a scarf for Sonnet, speed lines for Haiku. It stays on.
 - **Git**: confetti after a `git commit` lands. A horrified face for `git push --force` or `-f`.
 - **Late night**: a nightcap from 00:00 to 05:00 local time.
 
-One reaction plays at a time. Wake, revive, hatch, evolve and gleam always win, and a bite keeps its own moves. An egg, a sleeping pet and a dead pet wear no props. `/omn gags off` turns all of them off, outfit and nightcap included.
+One reaction plays at a time. Wake, revive, hatch, evolve and gleam always win, and a bite keeps its own moves. An egg, a sleeping pet and a dead pet wear no props. `/omn gags off` turns all of them off, nightcap included.
