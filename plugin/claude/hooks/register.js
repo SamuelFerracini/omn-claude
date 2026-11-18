@@ -1395,8 +1395,32 @@ function bitePose(b, m) {
   return { lift: 0, open: false, token: null }
 }
 
+// The backdrop: of the colors on the frame's top two rows, the one seen most
+// on the frame's border above the ground (top two rows, side columns down to
+// row 14). Pixel (0,0) alone is not enough: some stage-4 sprites fill the
+// frame and put a crown, leaves or a sparkle there. A color only the sides
+// have (wings, arms) is never picked. On a tie the corner wins, so a frame
+// with no repeated border color keeps (0,0).
 function bgOf(raw) {
-  return [raw[0], raw[1], raw[2]]
+  const color = (x, y) => {
+    const i = (y * 16 + x) * 3
+    return (raw[i] << 16) | (raw[i + 1] << 8) | raw[i + 2]
+  }
+  const count = new Map()
+  for (let y = 0; y < 2; y++) for (let x = 0; x < 16; x++) count.set(color(x, y), (count.get(color(x, y)) || 0) + 1)
+  for (let y = 2; y < 15; y++) {
+    for (const x of [0, 15]) if (count.has(color(x, y))) count.set(color(x, y), count.get(color(x, y)) + 1)
+  }
+  const corner = color(0, 0)
+  let best = corner
+  let most = count.get(corner)
+  for (const [c, n] of count) {
+    if (n > most) {
+      most = n
+      best = c
+    }
+  }
+  return [best >> 16, (best >> 8) & 255, best & 255]
 }
 
 function samePx(raw, i, c) {
@@ -1895,10 +1919,14 @@ function spawnConfetti(g) {
     m = { top: 4, minX: 4, maxX: 11 }
   }
   const cx = (m.minX + m.maxX) / 2
+  // From just over the head, but never above row 3: a pet that fills the frame
+  // still sees its confetti rise and rain down over it. Less headroom, less lift.
+  const y = Math.max(3, m.top - 1)
+  const lift = Math.min(1, 0.45 + y * 0.06)
   g.bits = []
   for (let i = 0; i < 10; i++) {
     const s = i - 4.5
-    g.bits.push({ x: cx + s * 0.3, y: m.top - 1, vx: s * 0.16, vy: -0.7 - (i % 3) * 0.2, c: bitColors[i % bitColors.length] })
+    g.bits.push({ x: cx + s * 0.3, y, vx: s * 0.16, vy: -lift - (i % 3) * 0.15, c: bitColors[i % bitColors.length] })
   }
 }
 
@@ -2184,18 +2212,16 @@ function rowSpan(mask, y) {
   return [a, b]
 }
 
-// The widest of the top three rows: where a hat or cap sits.
+// Where a hat or cap sits: [left, right, row] of the first row from the top
+// that is at least half as wide as the body. An antenna, sprout, flame tip or
+// crown above it is narrower, so the hat goes on the head and they poke out.
 function headSpan(m, mask) {
-  let best = [m.minX, m.maxX]
-  let bw = -1
-  for (let y = m.top; y <= Math.min(m.top + 2, m.foot); y++) {
+  const need = Math.max(3, Math.ceil((m.maxX - m.minX + 1) / 2))
+  for (let y = m.top; y <= m.foot; y++) {
     const [a, b] = rowSpan(mask, y)
-    if (b >= a && b - a > bw) {
-      bw = b - a
-      best = [a, b]
-    }
+    if (b - a + 1 >= need) return [a, b, y]
   }
-  return best
+  return [m.minX, m.maxX, m.top]
 }
 
 // The eyes: a pair of matching, rare (at most 4 pixels), non-body-fill pixels
@@ -2256,7 +2282,7 @@ function thinkDots(k, g) {
 
 function hardHat(k) {
   const [a, b] = k.head
-  const brim = Math.max(2, k.m.top - 1)
+  const brim = Math.max(2, k.head[2] - 1)
   for (let x = a - 1; x <= b + 1; x++) paint(k.buf, x, brim, pxFed)
   for (let x = a + 1; x <= b - 1; x++) paint(k.buf, x, brim - 1, pxGold)
   for (let x = a + 3; x <= b - 3; x++) paint(k.buf, x, brim - 2, pxGold)
@@ -2266,7 +2292,7 @@ function hardHat(k) {
 // A white-trimmed cap whose tip flops over to the right, pompom hanging down.
 function nightcap(k) {
   const [a, b] = k.head
-  const y = Math.max(3, k.m.top - 1)
+  const y = Math.max(3, k.head[2] - 1)
   const mid = (a + b) >> 1
   for (let x = a; x <= b; x++) paint(k.buf, x, y, pxText)
   for (let x = a + 1; x <= b - 1; x++) paint(k.buf, x, y - 1, pxExp)
@@ -2309,42 +2335,53 @@ function binoculars(k) {
   }
 }
 
-// A half-size copy of the pet pops out beside it, then poofs.
+// A small copy of the pet pops out beside it, then poofs. Beside the pet it
+// is as big as the room there allows (half size at most). With less than a
+// third of the pet's width free, it stands in front at the right edge, a third
+// of the pet's size, rimmed in the backdrop color so it reads as its own figure.
 function clone(k, g) {
   const { buf, m, mask } = k
-  const cw = Math.ceil((m.maxX - m.minX + 1) / 2)
-  const ch = Math.ceil((m.foot - m.top + 1) / 2)
-  let x0 = m.maxX + 1
-  if (x0 + cw > 16) x0 = m.minX - cw >= 0 ? m.minX - cw : 16 - cw
+  const w = m.maxX - m.minX + 1
+  const h = m.foot - m.top + 1
+  const right = 15 - m.maxX
+  const room = Math.max(right, m.minX)
+  const small = Math.max(4, Math.round(w / 3))
+  const beside = room >= small
+  const cw = beside ? Math.min(Math.ceil(w / 2), room) : small
+  const ch = Math.max(3, Math.round((h * cw) / w))
+  const x0 = beside ? (right >= cw ? m.maxX + 1 : m.minX - cw) : 16 - cw
   const y0 = m.foot - ch + 1
   if (g.t < 2 || (g.held === 0 && g.left <= 3)) {
     puff(k, x0 + (cw >> 1), y0 + (ch >> 1), g.t)
     return
   }
-  // With no room beside the pet, the clone stands in front of its edge, with a
-  // background-colored rim so it reads as its own little figure.
   const copy = buf.slice()
   const on = new Uint8Array(16 * 18)
   for (let cy = 0; cy < ch; cy++) {
     for (let cx = 0; cx < cw; cx++) {
-      const sx = m.minX + cx * 2
-      const sy = m.top + cy * 2
+      // Edge to edge, so the clone keeps the pet's outline.
+      const sx = m.minX + Math.round((cx * (w - 1)) / Math.max(1, cw - 1))
+      const sy = m.top + Math.round((cy * (h - 1)) / Math.max(1, ch - 1))
       const dx = x0 + cx
       const dy = y0 + cy
-      if (maskAt(mask, sx, sy) && dx <= 15 && dy <= 17) on[dy * 16 + dx] = 1
+      if (maskAt(mask, sx, sy) && dx >= 0 && dx <= 15 && dy <= 17) on[dy * 16 + dx] = (sy * 16 + sx) + 1
     }
   }
-  const bg = bgOf(copy)
+  if (!beside) {
+    const bg = bgOf(copy)
+    for (let id = 0; id < on.length; id++) {
+      if (!on[id]) continue
+      const x = id % 16
+      const y = Math.floor(id / 16)
+      for (const [ax, ay] of [[x - 1, y], [x, y - 1]]) {
+        if (ax >= 0 && ay >= 0 && !on[ay * 16 + ax] && maskAt(mask, ax, ay)) setPx(buf, ax, ay, bg)
+      }
+    }
+  }
   for (let id = 0; id < on.length; id++) {
     if (!on[id]) continue
-    const x = id % 16
-    const y = Math.floor(id / 16)
-    for (const [ax, ay] of [[x - 1, y], [x + 1, y], [x, y - 1]]) {
-      if (ax >= 0 && ax < 16 && ay >= 0 && !on[ay * 16 + ax] && maskAt(mask, ax, ay)) setPx(buf, ax, ay, bg)
-    }
-  }
-  for (let id = 0; id < on.length; id++) {
-    if (on[id]) copyPx(buf, id % 16, Math.floor(id / 16), copy, m.minX + (id % 16 - x0) * 2, m.top + (Math.floor(id / 16) - y0) * 2)
+    const src = on[id] - 1
+    copyPx(buf, id % 16, Math.floor(id / 16), copy, src % 16, Math.floor(src / 16))
   }
 }
 
@@ -2358,37 +2395,53 @@ function puff(k, x, y, t) {
 function sweat(k, g) {
   const [, b] = k.head
   const x = b < 15 ? b + 1 : k.head[0] - 1
-  const y = k.m.top + 1 + Math.min(4, g.t >> 1)
+  const y = k.head[2] + 1 + Math.min(4, g.t >> 1)
   paint(k.buf, x, y - 1, pxText)
   paint(k.buf, x, y, pxSky)
 }
 
-// A paw across both eyes, drawn in the body's own outline and fill colors, its
-// arm coming up from the side.
+// The left eye shut to a line, a paw over the right eye with its arm coming up
+// from the side. The paw is the body's own fill, lightened so it shows on the
+// face, rimmed in the body's outline color.
 function palm(k) {
   const { buf, eyes, mask } = k
-  const { y, lx, rx } = eyes
+  const { y, lx, rx, w } = eyes
   const [a] = rowSpan(mask, y)
-  const at = (x, yy) => [buf[(yy * 16 + x) * 3], buf[(yy * 16 + x) * 3 + 1], buf[(yy * 16 + x) * 3 + 2]]
-  const edge = a < 16 ? at(a, y) : pxInk
-  const fill = a < 15 ? at(Math.min(15, lx + 1), y - 1) : pxFed
-  for (let x = lx - 1; x <= rx + 1; x++) {
-    paint(buf, x, y - 1, edge)
-    paint(buf, x, y, fill)
+  const px = (x, yy) => [buf[(yy * 16 + x) * 3], buf[(yy * 16 + x) * 3 + 1], buf[(yy * 16 + x) * 3 + 2]]
+  const edge = a < 16 ? px(a, y) : pxInk
+  const fill = px(Math.min(15, Math.max(0, (lx + rx) >> 1)), y)
+  const light = fill.map((v) => (v + 255) >> 1)
+  for (let x = lx; x < lx + w; x++) {
+    paint(buf, x, y - 1, fill)
+    paint(buf, x, y, edge)
+  }
+  paint(buf, lx + w, y, edge)
+  const x0 = rx - w - 1
+  for (let x = x0; x <= rx + 1; x++) {
+    paint(buf, x, y - 1, light)
+    paint(buf, x, y, x === x0 || x === rx + 1 ? edge : light)
     paint(buf, x, y + 1, edge)
   }
-  paint(buf, lx - 1, y, edge)
-  paint(buf, rx + 1, y, edge)
+  for (let x = x0 + 1; x <= rx + 1; x += 2) paint(buf, x, y - 2, edge)
   paint(buf, rx + 2, y + 1, edge)
   paint(buf, rx + 2, y + 2, edge)
 }
 
+// Three stars 120 degrees apart circling just over the head, so two never
+// stack: two gold plus shapes and one white point.
 function stars(k, g) {
   const cx = (k.head[0] + k.head[1]) / 2
-  const cy = Math.max(1, k.m.top - 1)
+  const cy = Math.max(1, k.head[2] - 2)
+  const r = Math.min(5, Math.max(3, (k.head[1] - k.head[0]) / 2))
   for (let i = 0; i < 3; i++) {
-    const a = g.t * 0.7 + (i * Math.PI * 2) / 3
-    paint(k.buf, Math.round(cx + 4 * Math.cos(a)), Math.round(cy + 1.2 * Math.sin(a)), i % 2 ? pxWhite : pxGold)
+    const a = g.t * 0.6 + (i * Math.PI * 2) / 3
+    const x = Math.round(cx + r * Math.cos(a))
+    const y = Math.round(cy + 1.4 * Math.sin(a))
+    if (i === 2) {
+      paint(k.buf, x, y, pxWhite)
+      continue
+    }
+    for (const [dx, dy] of [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]]) paint(k.buf, x + dx, y + dy, i ? pxText : pxGold)
   }
 }
 

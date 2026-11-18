@@ -957,17 +957,36 @@ test('gag 2, tool props: each tool shows its prop while it runs and ~1s after', 
   }
 })
 
-test('gag 2, clone: pops out (puff), shows a half-size copy beside the pet, then poofs', async () => {
+test('gag 2, clone: pops out (puff), stands small in front when there is no room beside, then poofs', async () => {
   gagSetup()
   const g = startGag({ kind: 'prop', prop: 'clone', held: 1 })
-  // The pet spans x 3-12 (10 wide), so the 5-wide clone goes on the left, x 0-4? no room: in front at x 11-15.
-  assert.deepEqual(pxAt(13, 12), [0xc8, 0xc4, 0xd4])
+  // The pet spans x 3-12: 3 free columns, less than a third of its width, so a
+  // 4x4 clone stands in front at x 12-15, rows 11-14, rimmed in the backdrop.
+  assert.deepEqual(pxAt(14, 13), [0xc8, 0xc4, 0xd4], 'puff first')
   ticks(2)
-  assert.deepEqual(pxAt(11, 10), G.line)
-  assert.deepEqual(pxAt(15, 14), G.line)
+  assert.deepEqual([pxAt(12, 11), pxAt(15, 14), pxAt(13, 12)], [G.line, G.line, G.fill])
+  assert.deepEqual([pxAt(11, 12), pxAt(13, 10)], [G.bg, G.bg], 'rim')
+  assert.deepEqual(pxAt(5, 9), G.eye, 'the rest of the pet is untouched')
   releaseGag(g)
   ticks(7)
-  assert.deepEqual(pxAt(13, 12), [0xc8, 0xc4, 0xd4])
+  assert.deepEqual(pxAt(14, 13), [0xc8, 0xc4, 0xd4], 'poof at the end')
+})
+
+test('gag 2, clone: a narrow pet gets a clone beside it, the pet untouched', () => {
+  const raw = Uint8Array.from(Buffer.from(gagPet, 'base64'))
+  // Clear x 9-12 so the pet spans x 3-8 (6 wide), leaving 7 columns free.
+  for (let y = 6; y <= 14; y++) for (let x = 9; x <= 12; x++) raw.set(G.bg, (y * 16 + x) * 3)
+  for (let y = 6; y <= 14; y++) raw.set(G.line, (y * 16 + 8) * 3)
+  const pet = Buffer.from(raw).toString('base64')
+  gagSetup({ frames: [pet] })
+  startGag({ kind: 'prop', prop: 'clone', held: 1 })
+  ticks(2)
+  const b = Buffer.from(rgbaOf(pet), 'base64')
+  const px = (x, y) => [b[(y * 16 + x) * 4], b[(y * 16 + x) * 4 + 1], b[(y * 16 + x) * 4 + 2]]
+  // half size: 3 wide, 5 tall, standing on the same row as the pet's feet, x 9-11
+  assert.deepEqual([px(9, 10), px(11, 14), px(10, 12)], [G.line, G.line, G.fill])
+  assert.deepEqual(px(8, 10), G.line, 'the pet keeps its edge')
+  resetPortraitState()
 })
 
 test('gag 2: no props on an egg, a dead pet or a sleeping pet', async () => {
