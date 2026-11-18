@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.33'
+const VERSION = '0.4.34'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -14,7 +14,7 @@ let keyPath = ''
 let releaseArmedAt = 0
 const releaseWindow = 60000
 const nickRule = /^[A-Za-z0-9_-]{1,12}$/
-const usageText = 'usage: /omn | /omn key <private-key> | /omn ssh'
+const usageText = 'usage: /omn | /omn key <private-key> | /omn ssh | /omn gags on|off'
 let petId = ''
 let warned = false
 let tick = 0
@@ -80,6 +80,7 @@ export function register(on) {
     if (typeof savedKey === 'string' && savedKey !== '') keyPath = await preferPrivate($, savedKey)
     const savedPet = await $.store.get('petId')
     petId = petIdOf(savedPet)
+    gagsOn = (await $.store.get('gags')) !== 'off'
     $.clock.every(100, () => stepFrame($))
     $.clock.every(30000, () => {
       if (!sessionLive) return
@@ -103,7 +104,7 @@ export function register(on) {
     await $.command.register({
       name: 'omn',
       description: 'Show your omn pet, set its SSH key, or show the ssh command that reaches it',
-      argumentHint: '[key <path> | ssh]',
+      argumentHint: '[key <path> | ssh | gags on|off]',
     })
     await $.command.register({
       name: 'omn-adopt',
@@ -143,6 +144,7 @@ export function register(on) {
     idleHop = 0
     sparkLeft = 0
     quiet = 0
+    clearGags()
     try {
       // Other Claude sessions still open keep the pet awake. Only the last one puts it to sleep.
       if ((await holdSession($, false)) === 0) await postSession($, 'close')
@@ -159,6 +161,7 @@ export function register(on) {
       return { text: petId ? 'omn ' + petId : usageText }
     }
     if (arg === 'ssh') return sshCommand($)
+    if (arg === 'gags' || arg.startsWith('gags ')) return gagsCommand($, arg.slice(4).trim())
     if (arg.startsWith('key ') || arg.startsWith('/') || arg.startsWith('~') || arg.startsWith('.')) {
       await useKey($, await preferPrivate($, arg.startsWith('key ') ? arg.slice(4).trim() : arg))
       await postSession($, 'open')
@@ -215,14 +218,63 @@ export function register(on) {
     })
   })
 
+  on('turn.start', async ($, e, next) => {
+    // Only the main loop thinks out loud. A subagent's turn has its own agentId.
+    if (e.agentId === undefined) {
+      failRun = 0
+      endThink()
+      thinking = startGag({ kind: 'think', held: 1 })
+    }
+    return next(e)
+  })
+
   on('turn.step', async function* ($, e, next) {
-    const result = yield* next(e)
+    const main = e.agentId === undefined
+    // The first streamed chunk of the main loop ends the thinking dots.
+    const result = yield* (main ? onFirst(next(e), endThink) : next(e))
     tally(e, result)
     return result
   })
 
+  // The call itself is never changed: whatever next(e) answers (or throws) goes back as is.
+  on('tool.call', async ($, e, next) => {
+    const gags = toolGags(e)
+    let res
+    try {
+      res = await next(e)
+    } catch (err) {
+      releaseGag(gags.prop)
+      toolFailed()
+      throw err
+    }
+    releaseGag(gags.prop)
+    if (res && res.isError === true) toolFailed()
+    else if (res && !res.deny) {
+      failRun = 0
+      if (gags.commit) startGag({ kind: 'confetti' })
+    }
+    return res
+  })
+
+  on('turn.abort', async ($, e, next) => {
+    const result = await next(e)
+    abortGag()
+    return result
+  })
+
+  on('session.compact', async ($, e, next) => {
+    const g = e.agentId === undefined && e.trigger !== 'precompute' ? startGag({ kind: 'squish', held: 1 }) : null
+    try {
+      return await next(e)
+    } finally {
+      releaseGag(g)
+    }
+  })
+
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId === undefined) endThink()
+    if (e.reason === 'aborted') abortGag()
     const id = e.turnId || ''
     const bag = pending.get(id) || pending.get('')
     pending.delete(id)
@@ -236,6 +288,7 @@ export function register(on) {
     const deltas = clampDeltas(xpOf(turnDeltas) > 0 ? turnDeltas : deltasOf(bag))
     const fam = mealFamily(deltas)
     if (fedMark === 0 && xpOf(deltas) > 0) queueBite(xpOf(deltas), fam)
+    if (bigMeal(xpOf(deltas))) startGag({ kind: 'burp' })
     fedTurn = ''
     fedMark = 0
     if (xpOf(deltas) <= 0) return result
@@ -314,8 +367,11 @@ function stepFrame($) {
   const src = wakeFrom || portrait
   if (!src || !src.frames || !src.frames.length) return
   tick++
+  // The idle frames advance at half speed while a big meal settles.
+  frameTick += slowLeft > 0 ? 0.5 : 1
   stepFeed()
   stepBits()
+  stepGag()
   if (sparkLeft > 0 && !bite) sparkLeft--
   if (idleHop > 0) idleHop--
   if (wakeLeft > 0) {
@@ -348,7 +404,7 @@ function stepFrame($) {
 }
 
 function busy() {
-  return wakeLeft > 0 || reviveLeft > 0 || arriveLeft > 0 || evolveLeft > 0 || gleamLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0
+  return wakeLeft > 0 || reviveLeft > 0 || arriveLeft > 0 || evolveLeft > 0 || gleamLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0 || !!gag || !!gagNext
 }
 
 function petDead() {
@@ -455,10 +511,20 @@ export function __state(patch) {
     if ('petId' in patch) petId = patch.petId
     if ('keyPath' in patch) keyPath = patch.keyPath
     if ('bite' in patch) bite = patch.bite
+    if ('wakeLeft' in patch) wakeLeft = patch.wakeLeft
+    if ('gag' in patch) gag = patch.gag
+    if ('gagNext' in patch) gagNext = patch.gagNext
+    if ('gagsOn' in patch) gagsOn = patch.gagsOn
+    if ('hour' in patch) gagHour = patch.hour
+    if ('failRun' in patch) failRun = patch.failRun
+    if ('meals' in patch) [mealAvg, mealN] = patch.meals
   }
-  return { reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait, petId, arriveLeft, arriveFrom, arriveTo, arrivePhase: arriveLeft > 0 ? arrivePhase() : '', note, namePrompt }
+  return {
+    reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait, petId, arriveLeft, arriveFrom, arriveTo, arrivePhase: arriveLeft > 0 ? arrivePhase() : '', note, namePrompt,
+    gag, gagNext: gagNext && gagNext.g, gagsOn, failRun, slowLeft, mealAvg, mealN, busy: !!busy(),
+  }
 }
-export { setRenderEnv, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand }
+export { setRenderEnv, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, stepFrame, startGag, releaseGag, eyesOf }
 
 function arrivePhase() {
   return arriveStep()[0]
@@ -646,6 +712,8 @@ function meterText(Box, Text, growth) {
   const head = []
   if (name) head.push(Text({ color: cText, children: [name] }))
   if (portrait && portrait.gleam === true) head.push(Text({ color: cFed, children: ['✦'] }))
+  // On the name row, so the label never changes the pane's height.
+  if (gagShown() && gag.kind === 'burp') head.push(Text({ color: cFed, children: ['burp!'] }))
   if (portrait && portrait.status === 'sleeping') head.push(Text({ color: cDim, children: ['sleeping'] }))
   else if (portrait && portrait.status === 'dead') head.push(Text({ color: cWarn, children: ['dead'] }))
   if (head.length === 1 && name) lines.push(head[0])
@@ -897,7 +965,7 @@ function petTree($, e) {
   const { Box, Text, Raster, Svg, Image } = $.ui.resolve(e)
   if (e.plugin) ownPlugin = e.plugin
   const src = shownPortrait()
-  const frame = src.frames[tick % src.frames.length]
+  const frame = src.frames[Math.floor(frameTick) % src.frames.length]
   const mode = renderMode()
   const picture =
     lastSurface === 'terminal' && mode === 'image' && Image
@@ -1112,6 +1180,7 @@ function present(b64) {
   // A one-pixel rise puts the crown on the seam between two cells.
   // Nudge so the hard color change sits inside one cell. Both rows stay.
   if (seamSplit(buf)) liftPet(buf, petTop(buf) > 0 ? 1 : -1)
+  paintGags(buf, m)
   paintBits(buf)
   paintSpark(buf)
   paintSleep(buf)
@@ -1326,8 +1395,32 @@ function bitePose(b, m) {
   return { lift: 0, open: false, token: null }
 }
 
+// The backdrop: of the colors on the frame's top two rows, the one seen most
+// on the frame's border above the ground (top two rows, side columns down to
+// row 14). Pixel (0,0) alone is not enough: some stage-4 sprites fill the
+// frame and put a crown, leaves or a sparkle there. A color only the sides
+// have (wings, arms) is never picked. On a tie the corner wins, so a frame
+// with no repeated border color keeps (0,0).
 function bgOf(raw) {
-  return [raw[0], raw[1], raw[2]]
+  const color = (x, y) => {
+    const i = (y * 16 + x) * 3
+    return (raw[i] << 16) | (raw[i + 1] << 8) | raw[i + 2]
+  }
+  const count = new Map()
+  for (let y = 0; y < 2; y++) for (let x = 0; x < 16; x++) count.set(color(x, y), (count.get(color(x, y)) || 0) + 1)
+  for (let y = 2; y < 15; y++) {
+    for (const x of [0, 15]) if (count.has(color(x, y))) count.set(color(x, y), count.get(color(x, y)) + 1)
+  }
+  const corner = color(0, 0)
+  let best = corner
+  let most = count.get(corner)
+  for (const [c, n] of count) {
+    if (n > most) {
+      most = n
+      best = c
+    }
+  }
+  return [best >> 16, (best >> 8) & 255, best & 255]
 }
 
 function samePx(raw, i, c) {
@@ -1601,6 +1694,796 @@ function petTop(buf) {
     for (let x = 0; x < 16; x++) if (mask[y * 16 + x]) return y
   }
   return -1
+}
+
+// ---- Gags ----
+// Short reactions to what Claude does, drawn over the idle frames like hop and
+// sparkle. One transient gag runs at a time (gag) and one more may wait
+// (gagNext); a higher priority gag replaces the running one, a lower one waits
+// up to gagWait ticks or is dropped. The nightcap is persistent and draws
+// under it. A scene (wake, revive, arrive, evolve, gleam)
+// drops every gag. During a bite the bite owns the body: a gag draws its
+// overlays on the moved sprite but none of its own body motion.
+let gagsOn = true
+let gag = null
+let gagNext = null
+let thinking = null
+let failRun = 0
+let gagHour = null
+let mealAvg = 0
+let mealN = 0
+let slowLeft = 0
+let frameTick = 0
+const gagPrio = { think: 1, prop: 2, confetti: 3, burp: 4, horror: 4, flinch: 5, facepalm: 6, squish: 6, dizzy: 7 }
+// Ticks (100ms) a gag plays once nothing holds it.
+const gagLen = { think: 0, prop: 10, confetti: 14, burp: 15, horror: 15, flinch: 8, facepalm: 15, squish: 10, dizzy: 20 }
+// The gags that cover the head, so the nightcap steps aside.
+const headGags = new Set(['think', 'dizzy', 'horror', 'hat'])
+// Gags that are not worn, so an egg plays them too.
+const eggGags = new Set(['think', 'flinch', 'dizzy', 'squish', 'confetti', 'burp', 'horror'])
+const thinkCap = 600
+const holdCap = 3000
+const gagWait = 20
+const slowTicks = 30
+const failsToFacepalm = 3
+const springRows = [-2, -2, 2, 0]
+const toolProps = {
+  Bash: 'hat',
+  Read: 'lens',
+  Grep: 'lens',
+  Glob: 'lens',
+  Edit: 'pencil',
+  Write: 'pencil',
+  MultiEdit: 'pencil',
+  NotebookEdit: 'pencil',
+  WebSearch: 'binoculars',
+  WebFetch: 'binoculars',
+  Agent: 'clone',
+  Task: 'clone',
+}
+const pxGold = [0xf5, 0xd4, 0x4a]
+const pxWhite = [0xff, 0xff, 0xff]
+const pxText = [0xe8, 0xe6, 0xf0]
+const pxFed = [0xf2, 0xb8, 0x4b]
+const pxWarn = [0xff, 0x5a, 0x36]
+const pxSky = [0x7e, 0xc8, 0xe3]
+const pxGray = [0xc8, 0xc4, 0xd4]
+const pxExp = [0x9d, 0x8c, 0xff]
+const pxInk = [0x2a, 0x26, 0x40]
+
+function sceneOn() {
+  return wakeLeft > 0 || !!wakeFrom || reviveLeft > 0 || arriveLeft > 0 || evolveLeft > 0 || gleamLeft > 0
+}
+
+function petAwake() {
+  return !!portrait && portrait.status !== 'dead' && portrait.status !== 'sleeping'
+}
+
+// Stage 0 is the egg (the "Shadow" sprite every species starts as).
+function petEgg() {
+  if (!portrait) return false
+  if (typeof portrait.growth === 'number') return portrait.growth < stageAt[1]
+  return portrait.species === 'Shadow'
+}
+
+function gagShown() {
+  return !!gag && gagsOn && !sceneOn() && petAwake()
+}
+
+function lateNight() {
+  const h = gagHour !== null ? gagHour : new Date().getHours()
+  return h >= 0 && h < 5
+}
+
+// startGag returns the gag a caller holds and later releases, or null when it
+// was dropped. A held gag plays while held, then its length.
+function startGag(spec) {
+  if (!gagsOn || !portrait || sceneOn() || !petAwake()) return null
+  let kind = spec.kind
+  if (petEgg() && !eggGags.has(kind)) {
+    if (kind !== 'facepalm') return null
+    kind = 'flinch'
+  }
+  const g = { kind, prop: spec.prop || '', held: spec.held || 0, t: 0, left: gagLen[kind], prio: gagPrio[kind] }
+  if (kind === 'confetti') spawnConfetti(g)
+  if (!gag || g.prio > gag.prio) {
+    gag = g
+    return g
+  }
+  if (g.kind === gag.kind && g.prop === gag.prop) {
+    gag.held += g.held
+    gag.left = Math.max(gag.left, g.left)
+    return gag
+  }
+  if (!gagNext || g.prio >= gagNext.g.prio) gagNext = { g, at: tick }
+  return g
+}
+
+function releaseGag(g) {
+  if (g && g.held > 0) g.held--
+}
+
+function clearGags() {
+  gag = null
+  gagNext = null
+  thinking = null
+  failRun = 0
+  slowLeft = 0
+}
+
+function stepGag() {
+  if (slowLeft > 0) slowLeft--
+  if (!gag && !gagNext) return
+  if (!gagsOn || sceneOn() || !petAwake()) {
+    gag = null
+    gagNext = null
+    return
+  }
+  if (gagNext && tick - gagNext.at > gagWait) gagNext = null
+  if (!gag) promoteGag()
+  if (!gag) return
+  gag.t++
+  if (gag.bits) stepConfetti(gag)
+  if (gag.held > 0 && gag.t < (gag.kind === 'think' ? thinkCap : holdCap)) return
+  gag.held = 0
+  gag.left--
+  if (gag.left > 0) return
+  if (gag.kind === 'burp') slowLeft = slowTicks
+  gag = null
+  promoteGag()
+}
+
+function promoteGag() {
+  if (!gagNext) return
+  gag = gagNext.g
+  gagNext = null
+  gag.t = 0
+}
+
+function endThink() {
+  releaseGag(thinking)
+  thinking = null
+}
+
+function abortGag() {
+  endThink()
+  failRun = 0
+  startGag({ kind: 'dizzy' })
+}
+
+function toolFailed() {
+  failRun++
+  startGag({ kind: failRun >= failsToFacepalm ? 'facepalm' : 'flinch' })
+}
+
+// Starts the gags a tool call shows while it runs. prop is the held prop gag.
+function toolGags(e) {
+  const out = { prop: null, commit: false }
+  const tool = e && e.tool
+  if (tool === 'Bash') {
+    const cmd = typeof e.command === 'string' ? e.command : ''
+    if (forcePush(cmd)) startGag({ kind: 'horror' })
+    out.commit = gitCommit(cmd)
+  }
+  if (toolProps[tool]) out.prop = startGag({ kind: 'prop', prop: toolProps[tool], held: 1 })
+  return out
+}
+
+// Each git call in a shell line as [subcommand, ...its args]. Options before
+// the subcommand are skipped (-C <path> and -c <k=v> take a value).
+function gitCalls(cmd) {
+  const out = []
+  for (const part of String(cmd || '').split(/[;&|\n]+/)) {
+    const w = part.trim().split(/\s+/)
+    let i = w.indexOf('git')
+    if (i < 0) continue
+    i++
+    while (i < w.length && w[i].startsWith('-')) i += w[i] === '-C' || w[i] === '-c' ? 2 : 1
+    if (i < w.length) out.push(w.slice(i))
+  }
+  return out
+}
+
+export function forcePush(cmd) {
+  return gitCalls(cmd).some((w) => w[0] === 'push' && w.slice(1).some((a) => /^(--force(-with-lease)?(=.*)?|-[A-Za-z]*f[A-Za-z]*)$/.test(a)))
+}
+
+export function gitCommit(cmd) {
+  return gitCalls(cmd).some((w) => w[0] === 'commit')
+}
+
+// A turn far above the usual: 3x the running average, after 3 meals.
+function bigMeal(xp) {
+  if (!(xp > 0)) return false
+  const big = mealN >= 3 && xp >= 3 * mealAvg && xp >= 20
+  mealAvg = mealN ? mealAvg * 0.8 + xp * 0.2 : xp
+  mealN++
+  return big
+}
+
+async function gagsCommand($, arg) {
+  if (arg === 'on' || arg === 'off') {
+    gagsOn = arg === 'on'
+    await $.store.set('gags', arg)
+    if (!gagsOn) clearGags()
+    $.ui.invalidate('ui.render')
+  } else if (arg !== '') return { text: 'usage: /omn gags on|off' }
+  return { text: 'omn gags ' + (gagsOn ? 'on' : 'off') }
+}
+
+function spawnConfetti(g) {
+  let m
+  try {
+    m = measure(decodeB64(portrait.frames[Math.floor(frameTick) % portrait.frames.length]))
+  } catch (err) {
+    m = { top: 4, minX: 4, maxX: 11 }
+  }
+  const cx = (m.minX + m.maxX) / 2
+  // From just over the head, but never above row 3: a pet that fills the frame
+  // still sees its confetti rise and rain down over it. Less headroom, less lift.
+  const y = Math.max(3, m.top - 1)
+  const lift = Math.min(1, 0.45 + y * 0.06)
+  g.bits = []
+  for (let i = 0; i < 10; i++) {
+    const s = i - 4.5
+    g.bits.push({ x: cx + s * 0.3, y, vx: s * 0.16, vy: -lift - (i % 3) * 0.15, c: bitColors[i % bitColors.length] })
+  }
+}
+
+function stepConfetti(g) {
+  for (const b of g.bits) {
+    b.x += b.vx
+    b.y += b.vy
+    b.vy += 0.12
+  }
+}
+
+// paintGags draws the persistent nightcap, then the running gag.
+// m is the idle frame's measure (before any lift).
+function paintGags(buf, m0) {
+  if (!gagsOn || !portrait || sceneOn() || !petAwake()) return
+  const egg = petEgg()
+  const g = gagShown() ? gag : null
+  if (!g && (egg || !lateNight())) return
+  // A bite, hop or seam nudge may have moved the sprite: measure it as it is now.
+  // The mouth comes from the idle frame (its chomp diff), shifted along.
+  let dx = 0
+  if (g && !bite) {
+    const before = measure(buf)
+    dx = gagBody(buf, { ...before, mouth: m0.mouth + (before.top - m0.top) }, g)
+  }
+  const mask = petMask(buf, m0)
+  const m = boundsOf(mask, measure(buf))
+  // The eyes are found once per pet, so a blink frame never moves the props.
+  const fixed = petEyes(portrait)
+  const eyes = fixed ? { y: m.top + fixed.ry, lx: fixed.lx + dx, rx: fixed.rx + dx, w: fixed.w, found: true } : eyesOf(buf, m, mask)
+  const k = { buf, m, mask, mouth: m0.mouth + (m.top - m0.top), eyes, head: headSpan(m, mask) }
+  if (!egg && lateNight() && !(g && (headGags.has(g.kind) || headGags.has(g.prop)))) nightcap(k)
+  if (g) gagOverlay(k, g)
+}
+
+// The pet's mask for placing overlays. A bite's food token is drawn in the
+// pet's columns before this runs; it is not the pet, so its pixels are left out.
+function petMask(buf, m0) {
+  const mask = bodyMask(buf, floorAt(buf), bgOf(buf))
+  if (!bite) return mask
+  const c = crumbRgb[bite.kind] || crumbRgb.other
+  for (let y = 0; y < 18; y++) {
+    for (const x of [m0.tx, m0.tx + 1]) if (maskAt(mask, x, y) && samePx(buf, (y * 16 + x) * 3, c)) mask[y * 16 + x] = 0
+  }
+  return mask
+}
+
+function boundsOf(mask, base) {
+  let top = 18
+  let foot = -1
+  let minX = 16
+  let maxX = -1
+  for (let y = 0; y < 18; y++) {
+    for (let x = 0; x < 16; x++) {
+      if (!maskAt(mask, x, y)) continue
+      if (y < top) top = y
+      foot = Math.max(foot, y)
+      minX = Math.min(minX, x)
+      maxX = Math.max(maxX, x)
+    }
+  }
+  return foot < 0 ? base : { ...base, top, foot, minX, maxX }
+}
+
+// Applies the gag's body motion. Returns how far it slid the pet sideways.
+function gagBody(buf, m, g) {
+  let dx = 0
+  if (g.kind === 'flinch' || g.kind === 'facepalm') dx = g.t === 0 ? 1 : 0
+  else if (g.kind === 'dizzy') dx = g.t < 4 ? [2, 1, 1, 0][g.t] : 0
+  else if (g.kind === 'horror') dx = g.t < 8 && g.t % 2 === 1 ? 1 : 0
+  else if (g.kind === 'squish') squishPet(buf, m, squishRows(g, m))
+  else if (g.kind === 'burp') bulge(buf, m)
+  slidePet(buf, dx)
+  return dx
+}
+
+// Where a pet's eyes sit, found once across all its frames: the most common
+// answer, as rows below the sprite top and absolute columns. A blink or a
+// frame where the cheeks look like eyes is outvoted. null when no frame has eyes.
+const eyeCache = new WeakMap()
+function petEyes(p) {
+  if (!p) return null
+  if (eyeCache.has(p)) return eyeCache.get(p)
+  const votes = new Map()
+  for (const f of p.frames || []) {
+    let raw
+    try {
+      raw = decodeB64(f)
+    } catch (err) {
+      continue
+    }
+    if (raw.length < 16 * 18 * 3) continue
+    const m = measure(raw)
+    const e = eyesOf(raw, m)
+    if (!e.found) continue
+    const key = [e.y - m.top, e.lx, e.rx, e.w].join()
+    votes.set(key, (votes.get(key) || 0) + 1)
+  }
+  let best = ''
+  let n = 0
+  for (const [key, v] of votes) {
+    if (v > n) {
+      n = v
+      best = key
+    }
+  }
+  const [ry, lx, rx, w] = best.split(',').map(Number)
+  const out = best ? { ry, lx, rx, w } : null
+  eyeCache.set(p, out)
+  return out
+}
+
+function gagOverlay(k, g) {
+  if (g.kind === 'think') thinkDots(k, g)
+  else if (g.kind === 'prop') {
+    if (g.prop === 'hat') hardHat(k)
+    else if (g.prop === 'lens') lens(k)
+    else if (g.prop === 'pencil') pencil(k, g)
+    else if (g.prop === 'binoculars') binoculars(k)
+    else if (g.prop === 'clone') clone(k, g)
+  } else if (g.kind === 'flinch') sweat(k, g)
+  else if (g.kind === 'facepalm') {
+    palm(k)
+    sweat(k, g)
+  } else if (g.kind === 'dizzy') stars(k, g)
+  else if (g.kind === 'horror') horror(k)
+  else if (g.kind === 'confetti') for (const b of g.bits) paint(k.buf, b.x, b.y, b.c)
+}
+
+// Moves the pet sideways, feet on the ground band included (as liftPet moves
+// them). Where it stood, the band gets the ground color back, sky gets bg.
+// Scene pixels stay put.
+function slidePet(buf, dx) {
+  if (!dx) return
+  const copy = buf.slice()
+  const bg = bgOf(copy)
+  const { floor, c: ground } = groundOf(copy)
+  const mask = bodyMask(copy, floor, bg)
+  for (let y = 0; y < 18; y++) {
+    for (let x = 0; x < 16; x++) if (mask[y * 16 + x]) setPx(buf, x, y, y >= floor && ground ? ground : bg)
+  }
+  for (let y = 0; y < 18; y++) {
+    for (let x = 0; x < 16; x++) {
+      const sx = x - dx
+      if (sx < 0 || sx >= 16 || !mask[y * 16 + sx]) continue
+      copyPx(buf, x, y, copy, sx, y)
+    }
+  }
+}
+
+// Rows the squish takes off the body: down to about 60%, held, then a spring
+// with an overshoot. Always even, so the crown moves one whole terminal cell.
+function squishRows(g, m) {
+  const h = m.foot - m.top + 1
+  const d = Math.max(2, even(Math.round(h * 0.4)))
+  if (g.held > 0 || g.left > springRows.length) return g.t === 0 ? Math.max(2, even(d / 2)) : d
+  return springRows[springRows.length - g.left] || 0
+}
+
+function even(n) {
+  const v = Math.floor(n)
+  return v - (v % 2)
+}
+
+// Squashes (d > 0) or stretches (d < 0) the body by d rows above the feet.
+// The feet stay planted. A squash drops the rows that look most like a
+// neighbour; a stretch doubles them. Rows with eyes, a mouth or an outline
+// change look least like their neighbours, so they stay, and striped parts
+// (tentacles, legs) lose whole stripes instead of being resampled into noise.
+function squishPet(buf, m, d) {
+  const h = m.foot - m.top + 1
+  const lo = m.top
+  const hi = m.foot - (h >= 8 ? 2 : 1)
+  const span = hi - lo + 1
+  if (!d || span < 3) return
+  if (d > 0) d = Math.min(d, even(span - 2))
+  if (d < 0) d = -Math.min(-d, even(lo))
+  if (!d) return
+  const copy = buf.slice()
+  const bg = bgOf(copy)
+  const { floor, c: ground } = groundOf(copy)
+  const mask = bodyMask(copy, floor, bg)
+  const cell = (y, x) => (mask[y * 16 + x] ? rgb(copy, (y * 16 + x) * 3) : -1)
+  const diff = (a, b) => {
+    let n = 0
+    for (let x = 0; x < 16; x++) {
+      const p = cell(a, x)
+      const q = cell(b, x)
+      if (p === q) continue
+      if (p < 0 || q < 0) n += 400
+      else n += Math.abs((p >> 16) - (q >> 16)) + Math.abs(((p >> 8) & 255) - ((q >> 8) & 255)) + Math.abs((p & 255) - (q & 255))
+    }
+    return n
+  }
+  const rows = []
+  for (let y = lo; y <= hi; y++) rows.push(y)
+  const mid = (rows.length - 1) / 2
+  // The face stays: the eye row (and the one under it, for tall eyes) and the mouth.
+  const eyes = eyesOf(copy, m, mask)
+  const keep = new Set([m.mouth])
+  if (eyes.found) {
+    keep.add(eyes.y)
+    keep.add(eyes.y + 1)
+  }
+  // The first and last rows (crown and the row on the feet) are never picked.
+  // A stretch only doubles rows in the top third, above the face.
+  const pick = () => {
+    let best = -1
+    let cost = Infinity
+    const last = d > 0 ? rows.length - 2 : Math.max(1, Math.floor(rows.length / 3))
+    for (let i = 1; i <= last; i++) {
+      if (keep.has(rows[i])) continue
+      const c = Math.min(diff(rows[i], rows[i - 1]), diff(rows[i], rows[i + 1])) * 16 + Math.abs(i - mid)
+      if (c < cost) {
+        cost = c
+        best = i
+      }
+    }
+    return best
+  }
+  for (let k = 0; k < Math.abs(d); k++) {
+    const i = pick()
+    if (i < 0) break
+    if (d > 0) rows.splice(i, 1)
+    else rows.splice(i, 0, rows[i])
+  }
+  for (let y = lo; y <= hi; y++) {
+    for (let x = 0; x < 16; x++) if (mask[y * 16 + x]) setPx(buf, x, y, y >= floor && ground ? ground : bg)
+  }
+  const top = hi - rows.length + 1
+  rows.forEach((src, j) => {
+    for (let x = 0; x < 16; x++) if (mask[src * 16 + x]) copyPx(buf, x, top + j, copy, x, src)
+  })
+}
+
+// Belly rows (below the mouth) grow one pixel out on each side.
+function bulge(buf, m) {
+  const copy = buf.slice()
+  const bg = bgOf(copy)
+  const floor = floorAt(copy)
+  const mask = bodyMask(copy, floor, bg)
+  for (let y = m.mouth + 1; y < m.foot && y < floor; y++) {
+    let a = 16
+    let b = -1
+    for (let x = 0; x < 16; x++) {
+      if (!mask[y * 16 + x]) continue
+      if (x < a) a = x
+      b = x
+    }
+    if (b < 0) continue
+    if (a > 0 && !mask[y * 16 + a - 1]) copyPx(buf, a - 1, y, copy, a, y)
+    if (b < 15 && !mask[y * 16 + b + 1]) copyPx(buf, b + 1, y, copy, b, y)
+  }
+}
+
+function setPx(buf, x, y, c) {
+  const i = (y * 16 + x) * 3
+  buf[i] = c[0]
+  buf[i + 1] = c[1]
+  buf[i + 2] = c[2]
+}
+
+function copyPx(buf, x, y, src, sx, sy) {
+  const i = (y * 16 + x) * 3
+  const s = (sy * 16 + sx) * 3
+  buf[i] = src[s]
+  buf[i + 1] = src[s + 1]
+  buf[i + 2] = src[s + 2]
+}
+
+function maskAt(mask, x, y) {
+  return x >= 0 && x < 16 && y >= 0 && y < 18 && mask[y * 16 + x] === 1
+}
+
+function rowSpan(mask, y) {
+  let a = 16
+  let b = -1
+  for (let x = 0; x < 16; x++) {
+    if (!maskAt(mask, x, y)) continue
+    if (x < a) a = x
+    b = x
+  }
+  return [a, b]
+}
+
+// Where a hat or cap sits: [left, right, row] of the first row from the top
+// that is at least half as wide as the body. An antenna, sprout, flame tip or
+// crown above it is narrower, so the hat goes on the head and they poke out.
+function headSpan(m, mask) {
+  const need = Math.max(3, Math.ceil((m.maxX - m.minX + 1) / 2))
+  for (let y = m.top; y <= m.foot; y++) {
+    const [a, b] = rowSpan(mask, y)
+    if (b - a + 1 >= need) return [a, b, y]
+  }
+  return [m.minX, m.maxX, m.top]
+}
+
+// The eyes: a pair of matching, rare (at most 4 pixels), non-body-fill pixels
+// inside the outline, mirrored across the row or the sprite. Without one,
+// a guess 40% down the body. lx is the left eye's left pixel, rx the right
+// eye's right pixel, w the eye width.
+function eyesOf(buf, m, mask) {
+  const mk = mask || bodyMask(buf, floorAt(buf), bgOf(buf))
+  const at = (x, y) => maskAt(mk, x, y)
+  const col = (x, y) => rgb(buf, (y * 16 + x) * 3)
+  const count = new Map()
+  for (let id = 0; id < 16 * 18; id++) {
+    if (mk[id] !== 1) continue
+    const c = rgb(buf, id * 3)
+    count.set(c, (count.get(c) || 0) + 1)
+  }
+  let fill = -1
+  let most = 0
+  for (const [c, n] of count) {
+    if (n > most) {
+      most = n
+      fill = c
+    }
+  }
+  const inside = (x, y) => at(x, y) && at(x - 1, y) && at(x + 1, y) && at(x, y - 1) && at(x, y + 1)
+  const contrast = (c) => Math.abs((c >> 16) - (fill >> 16)) + Math.abs(((c >> 8) & 255) - ((fill >> 8) & 255)) + Math.abs((c & 255) - (fill & 255))
+  // Of every pair, the one that stands out most from the body fill: pupils,
+  // not a shine or blush. Ties go to the higher row.
+  let best = null
+  const hi = m.top + Math.ceil((m.foot - m.top) * 0.75)
+  for (let y = m.top + 1; y <= hi; y++) {
+    const [r0, r1] = rowSpan(mk, y)
+    for (let x = r0 + 1; x < (r0 + r1) / 2; x++) {
+      const c = col(x, y)
+      if (!inside(x, y) || c === fill || count.get(c) > 4) continue
+      let w = 1
+      while (w < 2 && at(x + w, y) && col(x + w, y) === c) w++
+      pair: for (const mid of [r0 + r1, m.minX + m.maxX]) {
+        for (const rx of [mid - x, mid - x - 1, mid - x + 1]) {
+          if (rx - w + 1 <= x + w || rx > 15 || col(rx, y) !== c || !inside(rx, y)) continue
+          if (!best || contrast(c) > best.score) best = { y, lx: x, rx, w, found: true, score: contrast(c) }
+          break pair
+        }
+      }
+    }
+  }
+  if (best) return { y: best.y, lx: best.lx, rx: best.rx, w: best.w, found: true }
+  const cx = Math.round((m.minX + m.maxX) / 2)
+  return { y: m.top + Math.round((m.foot - m.top) * 0.4), lx: cx - 2, rx: cx + 2, w: 1, found: false }
+}
+
+function thinkDots(k, g) {
+  const n = 1 + (Math.floor(g.t / 3) % 3)
+  const y = Math.max(0, k.m.top - 2)
+  const x0 = Math.max(0, Math.min(11, k.head[1] - 1))
+  for (let i = 0; i < n; i++) paint(k.buf, x0 + i * 2, y, pxText)
+}
+
+function hardHat(k) {
+  const [a, b] = k.head
+  const brim = Math.max(2, k.head[2] - 1)
+  for (let x = a - 1; x <= b + 1; x++) paint(k.buf, x, brim, pxFed)
+  for (let x = a + 1; x <= b - 1; x++) paint(k.buf, x, brim - 1, pxGold)
+  for (let x = a + 3; x <= b - 3; x++) paint(k.buf, x, brim - 2, pxGold)
+  paint(k.buf, a + 2, brim - 1, pxWhite)
+}
+
+// A white-trimmed cap whose tip flops over to the right, pompom hanging down.
+function nightcap(k) {
+  const [a, b] = k.head
+  const y = Math.max(3, k.head[2] - 1)
+  const mid = (a + b) >> 1
+  for (let x = a; x <= b; x++) paint(k.buf, x, y, pxText)
+  for (let x = a + 1; x <= b - 1; x++) paint(k.buf, x, y - 1, pxExp)
+  for (let x = mid - 1; x <= b - 1; x++) paint(k.buf, x, y - 2, pxExp)
+  for (let x = mid + 1; x <= b + 1; x++) paint(k.buf, x, y - 3, pxExp)
+  paint(k.buf, b + 2, y - 2, pxExp)
+  paint(k.buf, b + 2, y - 1, pxText)
+}
+
+// A magnifier ring around the right eye, handle down to the side.
+function lens(k) {
+  const { y, rx } = k.eyes
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) if (dx || dy) paint(k.buf, rx + dx, y + dy, pxGray)
+  }
+  paint(k.buf, rx + 2, y + 2, pxFed)
+  paint(k.buf, rx + 3, y + 3, pxFed)
+}
+
+// A pencil beside the body, tip by the mouth, scribbling up and down.
+function pencil(k, g) {
+  const { m } = k
+  const right = m.maxX <= 12 || m.minX < 3
+  const ax = right ? Math.min(12, m.maxX + 1) : m.minX - 1
+  const dir = right ? 1 : -1
+  const ty = k.mouth + ((g.t >> 1) % 2)
+  paint(k.buf, ax, ty, pxInk)
+  paint(k.buf, ax + dir, ty - 1, pxFed)
+  paint(k.buf, ax + dir * 2, ty - 2, pxFed)
+  paint(k.buf, ax + dir * 3, ty - 3, pxWarn)
+}
+
+function binoculars(k) {
+  const { y, lx, rx, w } = k.eyes
+  for (let x = lx - 1; x <= rx + 1; x++) paint(k.buf, x, y - 1, pxInk)
+  for (const x0 of [lx, rx - w + 1]) {
+    paint(k.buf, x0 - 1, y, pxInk)
+    paint(k.buf, x0 + w, y, pxInk)
+    for (let x = x0; x < x0 + w; x++) paint(k.buf, x, y, pxSky)
+  }
+}
+
+// A small copy of the pet pops out beside it, then poofs. Beside the pet it
+// is as big as the room there allows (half size at most). With less than a
+// third of the pet's width free, it stands in front at the right edge, a third
+// of the pet's size, rimmed in the backdrop color so it reads as its own figure.
+function clone(k, g) {
+  const { buf, m, mask } = k
+  const w = m.maxX - m.minX + 1
+  const h = m.foot - m.top + 1
+  const right = 15 - m.maxX
+  const room = Math.max(right, m.minX)
+  const small = Math.max(4, Math.round(w / 3))
+  const beside = room >= small
+  const cw = beside ? Math.min(Math.ceil(w / 2), room) : small
+  const ch = Math.max(3, Math.round((h * cw) / w))
+  const x0 = beside ? (right >= cw ? m.maxX + 1 : m.minX - cw) : 16 - cw
+  const y0 = m.foot - ch + 1
+  if (g.t < 2 || (g.held === 0 && g.left <= 3)) {
+    puff(k, x0 + (cw >> 1), y0 + (ch >> 1), g.t)
+    return
+  }
+  const copy = buf.slice()
+  const on = new Uint8Array(16 * 18)
+  for (let cy = 0; cy < ch; cy++) {
+    for (let cx = 0; cx < cw; cx++) {
+      // Edge to edge, so the clone keeps the pet's outline.
+      const sx = m.minX + Math.round((cx * (w - 1)) / Math.max(1, cw - 1))
+      const sy = m.top + Math.round((cy * (h - 1)) / Math.max(1, ch - 1))
+      const dx = x0 + cx
+      const dy = y0 + cy
+      if (maskAt(mask, sx, sy) && dx >= 0 && dx <= 15 && dy <= 17) on[dy * 16 + dx] = (sy * 16 + sx) + 1
+    }
+  }
+  if (!beside) {
+    const bg = bgOf(copy)
+    for (let id = 0; id < on.length; id++) {
+      if (!on[id]) continue
+      const x = id % 16
+      const y = Math.floor(id / 16)
+      for (const [ax, ay] of [[x - 1, y], [x, y - 1]]) {
+        if (ax >= 0 && ay >= 0 && !on[ay * 16 + ax] && maskAt(mask, ax, ay)) setPx(buf, ax, ay, bg)
+      }
+    }
+  }
+  for (let id = 0; id < on.length; id++) {
+    if (!on[id]) continue
+    const src = on[id] - 1
+    copyPx(buf, id % 16, Math.floor(id / 16), copy, src % 16, Math.floor(src / 16))
+  }
+}
+
+function puff(k, x, y, t) {
+  const d = t % 2 ? 1 : 2
+  for (const [dx, dy] of [[0, 0], [-d, -1], [d, -1], [-d, 1], [d, 1]]) {
+    if (!maskAt(k.mask, x + dx, y + dy)) paint(k.buf, x + dx, y + dy, pxGray)
+  }
+}
+
+function sweat(k, g) {
+  const [, b] = k.head
+  const x = b < 15 ? b + 1 : k.head[0] - 1
+  const y = k.head[2] + 1 + Math.min(4, g.t >> 1)
+  paint(k.buf, x, y - 1, pxText)
+  paint(k.buf, x, y, pxSky)
+}
+
+// The left eye shut to a line, a paw over the right eye with its arm coming up
+// from the side. The paw is the body's own fill, lightened so it shows on the
+// face, rimmed in the body's outline color.
+function palm(k) {
+  const { buf, eyes, mask } = k
+  const { y, lx, rx, w } = eyes
+  const [a] = rowSpan(mask, y)
+  const px = (x, yy) => [buf[(yy * 16 + x) * 3], buf[(yy * 16 + x) * 3 + 1], buf[(yy * 16 + x) * 3 + 2]]
+  const edge = a < 16 ? px(a, y) : pxInk
+  const fill = px(Math.min(15, Math.max(0, (lx + rx) >> 1)), y)
+  const light = fill.map((v) => (v + 255) >> 1)
+  for (let x = lx; x < lx + w; x++) {
+    paint(buf, x, y - 1, fill)
+    paint(buf, x, y, edge)
+  }
+  paint(buf, lx + w, y, edge)
+  const x0 = rx - w - 1
+  for (let x = x0; x <= rx + 1; x++) {
+    paint(buf, x, y - 1, light)
+    paint(buf, x, y, x === x0 || x === rx + 1 ? edge : light)
+    paint(buf, x, y + 1, edge)
+  }
+  for (let x = x0 + 1; x <= rx + 1; x += 2) paint(buf, x, y - 2, edge)
+  paint(buf, rx + 2, y + 1, edge)
+  paint(buf, rx + 2, y + 2, edge)
+}
+
+// Three stars 120 degrees apart circling just over the head, so two never
+// stack: two gold plus shapes and one white point.
+function stars(k, g) {
+  const cx = (k.head[0] + k.head[1]) / 2
+  const cy = Math.max(1, k.head[2] - 2)
+  const r = Math.min(5, Math.max(3, (k.head[1] - k.head[0]) / 2))
+  for (let i = 0; i < 3; i++) {
+    const a = g.t * 0.6 + (i * Math.PI * 2) / 3
+    const x = Math.round(cx + r * Math.cos(a))
+    const y = Math.round(cy + 1.4 * Math.sin(a))
+    if (i === 2) {
+      paint(k.buf, x, y, pxWhite)
+      continue
+    }
+    for (const [dx, dy] of [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]]) paint(k.buf, x + dx, y + dy, i ? pxText : pxGold)
+  }
+}
+
+// Eyes open wide (white above and below each pupil) and a "!" over the head.
+function horror(k) {
+  const { y, lx, rx, w } = k.eyes
+  for (const x0 of [lx, rx - w + 1]) {
+    for (let x = x0; x < x0 + w; x++) {
+      paint(k.buf, x, y - 1, pxWhite)
+      paint(k.buf, x, y + 1, pxWhite)
+    }
+  }
+  const x = Math.min(15, k.head[1] + 1)
+  const top = Math.max(3, k.m.top - 1)
+  paint(k.buf, x, top - 3, pxWarn)
+  paint(k.buf, x, top - 2, pxWarn)
+  paint(k.buf, x, top, pxWarn)
+}
+
+// Wraps a step's chunk stream so fn runs once, on the first chunk.
+function onFirst(src, fn) {
+  const it = typeof src.next === 'function' ? src : src[Symbol.asyncIterator]()
+  let fired = false
+  return {
+    [Symbol.asyncIterator]() {
+      return this
+    },
+    async next(v) {
+      const r = await it.next(v)
+      if (!fired && !r.done) {
+        fired = true
+        fn()
+      }
+      return r
+    },
+    return(v) {
+      return typeof it.return === 'function' ? it.return(v) : Promise.resolve({ done: true, value: v })
+    },
+    throw(err) {
+      return typeof it.throw === 'function' ? it.throw(err) : Promise.reject(err)
+    },
+  }
 }
 
 function tally(e, result) {
@@ -1882,6 +2765,7 @@ function resetPortraitState() {
   bites = []
   bite = null
   idleHop = 0
+  clearGags()
 }
 
 async function signPayload($, nonce, bodyOf) {

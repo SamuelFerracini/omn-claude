@@ -807,3 +807,499 @@ test('a frame with no ground band lifts everything that is not sky', () => {
   assert.deepEqual(at(buf, 7, 10), FUR)
   assert.deepEqual(at(buf, 7, 15), FUR)
 })
+
+// ---- Pet gags ----
+import { stepFrame, startGag, releaseGag, eyesOf, forcePush, gitCommit } from './register.js'
+
+// A 16x18 test pet: ground rows 15-17, an outlined body in rows 6-14, x 3-12,
+// with two white eyes at (5,9) and (10,9).
+const G = {
+  bg: [20, 16, 42],
+  ground: [29, 24, 56],
+  line: [17, 23, 45],
+  fill: [55, 68, 111],
+  eye: [234, 234, 234],
+  text: [0xe8, 0xe6, 0xf0],
+  fed: [0xf2, 0xb8, 0x4b],
+  gold: [0xf5, 0xd4, 0x4a],
+  white: [0xff, 0xff, 0xff],
+  sky: [0x7e, 0xc8, 0xe3],
+  exp: [0x9d, 0x8c, 0xff],
+  ink: [0x2a, 0x26, 0x40],
+  warn: [0xff, 0x5a, 0x36],
+}
+const gagPet = (() => {
+  const px = []
+  for (let y = 0; y < 18; y++) {
+    for (let x = 0; x < 16; x++) {
+      let c = y >= 15 ? G.ground : G.bg
+      if (y >= 6 && y <= 14 && x >= 3 && x <= 12) c = y === 6 || y === 14 || x === 3 || x === 12 ? G.line : G.fill
+      if (y === 9 && (x === 5 || x === 10)) c = G.eye
+      px.push(...c)
+    }
+  }
+  return Buffer.from(Uint8Array.from(px)).toString('base64')
+})()
+const tickHost = { ui: { invalidate() {} } }
+const ticks = (n) => {
+  for (let i = 0; i < n; i++) stepFrame(tickHost)
+}
+// The pixel at (x, y) as the image mode draws it (every mode shares present()).
+const pxAt = (x, y) => {
+  const b = Buffer.from(rgbaOf(gagPet), 'base64')
+  const i = (y * 16 + x) * 4
+  return [b[i], b[i + 1], b[i + 2]]
+}
+const frameRgb = () => {
+  const b = Buffer.from(rgbaOf(gagPet), 'base64')
+  const out = []
+  for (let i = 0; i < 16 * 18; i++) out.push([b[i * 4], b[i * 4 + 1], b[i * 4 + 2]])
+  return out
+}
+const topOf = () => {
+  const f = frameRgb()
+  for (let y = 0; y < 15; y++) for (let x = 0; x < 16; x++) if (f[y * 16 + x].join() === G.line.join()) return y
+  return -1
+}
+function gagSetup(over = {}) {
+  resetPortraitState()
+  __state({ portrait: { frames: [gagPet], growth: 25000, name: 'Gag', status: 'awake', ...over }, hour: 12, gagsOn: true, failRun: 0, bite: null })
+}
+function allHooks() {
+  const out = {}
+  register((event, matcher, fn) => {
+    const key = event + (typeof matcher === 'object' && matcher ? ':' + (matcher.command || matcher.component) : '')
+    out[key] = typeof matcher === 'function' ? matcher : fn
+  })
+  return out
+}
+const deferred = () => {
+  let resolve, reject
+  const p = new Promise((a, b) => ((resolve = a), (reject = b)))
+  return { p, resolve, reject }
+}
+
+__state({ hour: 12 })
+
+test('gag pet: the eye finder finds the test pet eyes', () => {
+  const raw = Buffer.from(gagPet, 'base64')
+  const e = eyesOf(raw, measure(raw))
+  assert.deepEqual([e.found, e.y, e.lx, e.rx, e.w], [true, 9, 5, 10, 1])
+})
+
+test('gag 1, thinking: dots blink above the head from turn.start until the first streamed chunk', async () => {
+  gagSetup()
+  const h = allHooks()
+  await h['turn.start']({}, { turnId: 't1', text: 'hi' }, async (e) => ({ turnId: e.turnId }))
+  let st = __state()
+  assert.equal(st.gag.kind, 'think')
+  assert.equal(st.gag.held, 1)
+  // one dot first, then two, then three: (11,4), (13,4), (15,4)
+  assert.deepEqual(pxAt(11, 4), G.text)
+  ticks(3)
+  assert.deepEqual(pxAt(13, 4), G.text)
+  ticks(3)
+  assert.deepEqual(pxAt(15, 4), G.text)
+  // A subagent's turn does not think out loud.
+  await h['turn.start']({}, { turnId: 't2', text: '', agentId: 'a1' }, async (e) => ({ turnId: e.turnId }))
+  assert.equal(__state().gag.held, 1)
+  async function* stream() {
+    yield { kind: 'text', text: 'hel' }
+    yield { kind: 'text', text: 'lo' }
+    return { turnId: 't1', index: 0, text: 'hello' }
+  }
+  const gen = h['turn.step']({}, { turnId: 't1', index: 0, model: 'claude-x', messageCount: 1 }, () => stream())
+  assert.deepEqual((await gen.next()).value, { kind: 'text', text: 'hel' })
+  assert.equal(__state().gag.held, 0)
+  assert.deepEqual((await gen.next()).value, { kind: 'text', text: 'lo' })
+  const end = await gen.next()
+  assert.equal(end.done, true)
+  assert.deepEqual(end.value, { turnId: 't1', index: 0, text: 'hello' })
+  ticks(1)
+  st = __state()
+  assert.equal(st.gag, null)
+  assert.deepEqual(pxAt(11, 4), G.bg)
+})
+
+test('gag 2, tool props: each tool shows its prop while it runs and ~1s after', async () => {
+  const h = allHooks()
+  const cases = [
+    ['Bash', 'hat', () => assert.deepEqual(pxAt(2, 5), G.fed)],
+    ['Read', 'lens', () => assert.deepEqual(pxAt(11, 9), [0xc8, 0xc4, 0xd4])],
+    ['Grep', 'lens', null],
+    ['Glob', 'lens', null],
+    ['Edit', 'pencil', () => assert.deepEqual(pxAt(12, measure(Buffer.from(gagPet, 'base64')).mouth), G.ink)],
+    ['Write', 'pencil', null],
+    ['WebSearch', 'binoculars', () => assert.deepEqual([pxAt(5, 9), pxAt(10, 9), pxAt(7, 8)], [G.sky, G.sky, G.ink])],
+    ['WebFetch', 'binoculars', null],
+    ['Agent', 'clone', null],
+    ['Task', 'clone', null],
+  ]
+  for (const [tool, prop, check] of cases) {
+    gagSetup()
+    const d = deferred()
+    const answer = { ref: 1, result: {}, text: 'ok' }
+    const run = h['tool.call']({}, { tool, tool_use_id: 'u1', command: 'ls' }, () => d.p)
+    let st = __state()
+    assert.equal(st.gag.kind, 'prop', tool)
+    assert.equal(st.gag.prop, prop, tool)
+    assert.equal(st.gag.held, 1)
+    if (check) check()
+    ticks(30)
+    assert.equal(__state().gag.prop, prop, 'held while the tool runs')
+    d.resolve(answer)
+    assert.equal(await run, answer, 'the tool answer passes through untouched')
+    assert.equal(__state().gag.held, 0)
+    ticks(9)
+    assert.equal(__state().gag.prop, prop)
+    ticks(1)
+    assert.equal(__state().gag, null, tool)
+  }
+})
+
+test('gag 2, clone: pops out (puff), stands small in front when there is no room beside, then poofs', async () => {
+  gagSetup()
+  const g = startGag({ kind: 'prop', prop: 'clone', held: 1 })
+  // The pet spans x 3-12: 3 free columns, less than a third of its width, so a
+  // 4x4 clone stands in front at x 12-15, rows 11-14, rimmed in the backdrop.
+  assert.deepEqual(pxAt(14, 13), [0xc8, 0xc4, 0xd4], 'puff first')
+  ticks(2)
+  assert.deepEqual([pxAt(12, 11), pxAt(15, 14), pxAt(13, 12)], [G.line, G.line, G.fill])
+  assert.deepEqual([pxAt(11, 12), pxAt(13, 10)], [G.bg, G.bg], 'rim')
+  assert.deepEqual(pxAt(5, 9), G.eye, 'the rest of the pet is untouched')
+  releaseGag(g)
+  ticks(7)
+  assert.deepEqual(pxAt(14, 13), [0xc8, 0xc4, 0xd4], 'poof at the end')
+})
+
+test('gag 2, clone: a narrow pet gets a clone beside it, the pet untouched', () => {
+  const raw = Uint8Array.from(Buffer.from(gagPet, 'base64'))
+  // Clear x 9-12 so the pet spans x 3-8 (6 wide), leaving 7 columns free.
+  for (let y = 6; y <= 14; y++) for (let x = 9; x <= 12; x++) raw.set(G.bg, (y * 16 + x) * 3)
+  for (let y = 6; y <= 14; y++) raw.set(G.line, (y * 16 + 8) * 3)
+  const pet = Buffer.from(raw).toString('base64')
+  gagSetup({ frames: [pet] })
+  startGag({ kind: 'prop', prop: 'clone', held: 1 })
+  ticks(2)
+  const b = Buffer.from(rgbaOf(pet), 'base64')
+  const px = (x, y) => [b[(y * 16 + x) * 4], b[(y * 16 + x) * 4 + 1], b[(y * 16 + x) * 4 + 2]]
+  // half size: 3 wide, 5 tall, standing on the same row as the pet's feet, x 9-11
+  assert.deepEqual([px(9, 10), px(11, 14), px(10, 12)], [G.line, G.line, G.fill])
+  assert.deepEqual(px(8, 10), G.line, 'the pet keeps its edge')
+  resetPortraitState()
+})
+
+test('gag 2: no props on an egg, a dead pet or a sleeping pet', async () => {
+  const h = allHooks()
+  for (const over of [{ growth: 10 }, { status: 'dead' }, { status: 'sleeping' }]) {
+    gagSetup(over)
+    await h['tool.call']({}, { tool: 'Bash', command: 'ls' }, async () => ({ result: {}, text: '' }))
+    assert.equal(__state().gag, null, JSON.stringify(over))
+  }
+})
+
+test('gag 3, fail flinch: an error gives a sweat drop and a 1-frame flinch; 3 in a row facepalm; a success resets', async () => {
+  gagSetup()
+  const h = allHooks()
+  const fail = { ref: 1, result: 'boom', text: 'boom', isError: true }
+  assert.equal(await h['tool.call']({}, { tool: 'Read', file_path: '/x' }, async () => fail), fail)
+  let st = __state()
+  assert.equal(st.failRun, 1)
+  assert.equal(st.gag.kind, 'flinch')
+  // flinch frame: the body slides 1px right, the sweat drop sits right of the head
+  assert.deepEqual(pxAt(3, 10), G.bg)
+  assert.deepEqual(pxAt(13, 10), G.line)
+  assert.deepEqual([pxAt(14, 6), pxAt(14, 7)], [G.text, G.sky])
+  ticks(1)
+  assert.deepEqual(pxAt(3, 10), G.line, 'one frame only')
+  await h['tool.call']({}, { tool: 'Read' }, async () => fail)
+  await assert.rejects(h['tool.call']({}, { tool: 'Bash', command: 'x' }, async () => { throw new Error('gone') }), /gone/)
+  st = __state()
+  assert.equal(st.failRun, 3)
+  assert.equal(st.gag.kind, 'facepalm')
+  // the paw covers both eyes
+  assert.notDeepEqual(pxAt(5, 9), G.eye)
+  assert.notDeepEqual(pxAt(10, 9), G.eye)
+  await h['tool.call']({}, { tool: 'Read' }, async () => ({ result: {}, text: 'fine' }))
+  assert.equal(__state().failRun, 0)
+  // a new turn resets the count too
+  __state({ failRun: 2 })
+  await h['turn.start']({}, { turnId: 't9', text: '' }, async () => ({ turnId: 't9' }))
+  assert.equal(__state().failRun, 0)
+})
+
+test('gag 3: an egg flinches instead of facepalming', () => {
+  gagSetup({ growth: 0 })
+  __state({ failRun: 2 })
+  assert.equal(startGag({ kind: 'facepalm' }).kind, 'flinch')
+})
+
+test('gag 4, abort dizzy: turn.abort or an aborted turn skids, then stars orbit the head for 2s', async () => {
+  for (const fire of ['abort', 'complete']) {
+    gagSetup()
+    const h = allHooks()
+    if (fire === 'abort') await h['turn.abort']({}, { turnId: 't1' }, async () => undefined)
+    else await h['turn.complete'](server({}).$, { turnId: 't1', reason: 'aborted' }, async () => ({ text: '' }))
+    let st = __state()
+    assert.equal(st.gag.kind, 'dizzy', fire)
+    // skid: 2px, then 1, then 1, then still
+    assert.deepEqual([pxAt(4, 10), pxAt(14, 10)], [G.bg, G.line])
+    const stars = frameRgb().filter((c, i) => i < 7 * 16 && (c.join() === G.gold.join() || c.join() === G.white.join()))
+    assert.ok(stars.length >= 2, 'stars around the head top')
+    ticks(4)
+    assert.deepEqual(pxAt(3, 10), G.line)
+    ticks(15)
+    assert.equal(__state().gag.kind, 'dizzy')
+    ticks(1)
+    assert.equal(__state().gag, null)
+  }
+})
+
+test('gag 5, big meal: a turn 3x the usual bulges the belly, says burp!, then slows the bob', async () => {
+  freshPet({ portrait: { frames: [gagPet], growth: 25000, name: 'Gag', status: 'awake' } })
+  __state({ hour: 12, gagsOn: true, meals: [100, 3] })
+  const h = allHooks()
+  const host = server({})
+  // 30000 opus output tokens = 1200 xp, 12x the 100 xp average
+  await h['turn.complete'](host.$, { turnId: 'big1', reason: 'answer', model: 'claude-opus-4', usage: { output_tokens: 30000 } }, async () => ({ text: '' }))
+  let st = __state()
+  assert.equal(st.gag.kind, 'burp')
+  assert.equal(st.mealN, 4)
+  __state({ bite: null })
+  // belly rows (below the mouth) are 1px wider each side
+  const m = measure(Buffer.from(gagPet, 'base64'))
+  assert.deepEqual([pxAt(2, m.mouth + 1), pxAt(13, m.mouth + 1)], [G.line, G.line])
+  assert.deepEqual(pxAt(2, 7), G.bg, 'not above the mouth')
+  const el = (type) => (props) => ({ type, props })
+  const $r = { ui: { resolve: () => ({ Box: el('box'), Text: el('text'), Raster: el('raster'), Svg: el('svg') }) } }
+  const tree = await h['ui.render:AbovePrompt']($r, { surface: 'terminal' }, async () => null)
+  assert.ok(JSON.stringify(tree).includes('"burp!"'))
+  // a normal meal is not big
+  __state({ gag: null, meals: [100, 3] })
+  await h['turn.complete'](host.$, { turnId: 'n1', reason: 'answer', model: 'claude-opus-4', usage: { output_tokens: 5000 } }, async () => ({ text: '' }))
+  assert.equal(__state().gag, null)
+  // the bob slows for 3s once the burp ends
+  gagSetup()
+  startGag({ kind: 'burp' })
+  ticks(15)
+  st = __state()
+  assert.equal(st.gag, null)
+  assert.equal(st.slowLeft, 30)
+})
+
+test('gag 6, compact squish: squashes to ~60% while compacting, then springs back with an overshoot', async () => {
+  gagSetup()
+  const h = allHooks()
+  assert.equal(topOf(), 6)
+  const d = deferred()
+  const run = h['session.compact']({}, { trigger: 'manual', messages: [] }, () => d.p)
+  assert.equal(__state().gag.kind, 'squish')
+  assert.equal(topOf(), 8, 'first tick: half the squash')
+  ticks(1)
+  // 4 rows asked; this small pet has only 2 droppable rows once its eyes and mouth stay
+  assert.equal(topOf(), 8)
+  assert.deepEqual([pxAt(5, 9), pxAt(10, 9), pxAt(5, 8)], [G.eye, G.eye, G.line], 'the rows above the eyes go, the eyes stay')
+  ticks(40)
+  assert.equal(topOf(), 8, 'holds while the compaction runs')
+  const done = { messages: [], tokensBefore: 10, tokensAfter: 5 }
+  d.resolve(done)
+  assert.equal(await run, done)
+  const tops = []
+  for (let i = 0; i < 10; i++) {
+    tops.push(topOf())
+    ticks(1)
+  }
+  assert.deepEqual(tops, [8, 8, 8, 8, 8, 8, 4, 4, 8, 6])
+  assert.ok(tops.every((t) => t % 2 === 0), 'whole cells only')
+  assert.equal(__state().gag, null)
+  // a precompute or a subagent's compaction does not squish
+  await h['session.compact']({}, { trigger: 'precompute', messages: [] }, async () => ({ messages: [] }))
+  await h['session.compact']({}, { trigger: 'auto', agentId: 'a1', messages: [] }, async () => ({ messages: [] }))
+  assert.equal(__state().gag, null)
+})
+
+test('gag 7, git moments: a commit throws confetti after it lands; a force push horrifies', async () => {
+  assert.equal(gitCommit('git add -A && git commit -m "x"'), true)
+  assert.equal(gitCommit('git -C repo commit --amend'), true)
+  assert.equal(gitCommit('git log --grep commit'), false)
+  assert.equal(gitCommit('echo commit'), false)
+  assert.equal(forcePush('git push --force origin main'), true)
+  assert.equal(forcePush('git push -f'), true)
+  assert.equal(forcePush('git push -uf origin x'), true)
+  assert.equal(forcePush('git push --force-with-lease'), true)
+  assert.equal(forcePush('git push origin feature-f'), false)
+  assert.equal(forcePush('git push && rm -f x'), false)
+  gagSetup()
+  const h = allHooks()
+  await h['tool.call']({}, { tool: 'Bash', command: 'git commit -m wip' }, async () => ({ result: {}, text: '' }))
+  let st = __state()
+  assert.equal(st.gag.kind, 'confetti')
+  const colors = [[0xf2, 0xb8, 0x4b], [0x9d, 0x8c, 0xff], [0xff, 0x5a, 0x36], [0xe8, 0xe6, 0xf0]].map((c) => c.join())
+  ticks(3)
+  assert.ok(frameRgb().filter((c, i) => i < 6 * 16 && colors.includes(c.join())).length >= 3, 'confetti above the head')
+  ticks(11)
+  assert.equal(__state().gag, null)
+  // a failed commit flinches instead
+  await h['tool.call']({}, { tool: 'Bash', command: 'git commit' }, async () => ({ result: 'x', isError: true }))
+  assert.equal(__state().gag.kind, 'flinch')
+  gagSetup()
+  const run = h['tool.call']({}, { tool: 'Bash', command: 'git push --force' }, async () => ({ result: {}, text: '' }))
+  st = __state()
+  assert.equal(st.gag.kind, 'horror')
+  assert.equal(st.gagNext.prop, 'hat', 'the hat waits its turn')
+  // wide eyes: white above and below each pupil, and a ! over the head
+  assert.deepEqual([pxAt(5, 8), pxAt(5, 10), pxAt(10, 8), pxAt(10, 10)], [G.white, G.white, G.white, G.white])
+  assert.deepEqual(pxAt(13, 2), G.warn)
+  await run
+  ticks(15)
+  assert.equal(__state().gag.kind, 'prop', 'the queued hat plays after')
+})
+
+test('gag 8, late night: a nightcap from 00:00 to 05:00', () => {
+  gagSetup()
+  assert.deepEqual(pxAt(5, 5), G.bg)
+  for (const hour of [0, 2, 4]) {
+    __state({ hour })
+    assert.deepEqual(pxAt(5, 5), G.text, 'trim at ' + hour)
+    assert.deepEqual(pxAt(6, 4), G.exp)
+  }
+  assert.equal(__state().busy, false, 'the nightcap alone keeps the pet idle')
+  __state({ hour: 5 })
+  assert.deepEqual(pxAt(5, 5), G.bg)
+  // a gag on the head takes the slot
+  __state({ hour: 2 })
+  startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  assert.deepEqual(pxAt(5, 5), G.fed)
+  __state({ hour: 12 })
+})
+
+test('gags: one at a time, higher priority replaces, lower waits then drops', () => {
+  gagSetup()
+  const hat = startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  const fl = startGag({ kind: 'flinch' })
+  assert.equal(__state().gag, fl)
+  startGag({ kind: 'prop', prop: 'pencil', held: 0 })
+  assert.equal(__state().gag, fl)
+  assert.equal(__state().gagNext.prop, 'pencil')
+  ticks(8)
+  assert.equal(__state().gag.prop, 'pencil')
+  releaseGag(hat)
+  // a queued gag that waits past 2s is dropped
+  gagSetup()
+  const squish = startGag({ kind: 'squish', held: 1 })
+  startGag({ kind: 'confetti' })
+  ticks(25)
+  assert.equal(__state().gagNext, null)
+  releaseGag(squish)
+  ticks(10)
+  assert.equal(__state().gag, null)
+  // the same gag again holds the running one, it does not stack
+  const a = startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  const b = startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  assert.equal(a, b)
+  assert.equal(a.held, 2)
+  assert.equal(__state().gagNext, null)
+})
+
+test('gags: wake, revive, arrive, evolve and gleam win; a bite keeps its pose', () => {
+  for (const scene of [{ wakeLeft: 5 }, { reviveLeft: 5 }, { gleamLeft: 5 }, { evolveLeft: 5 }]) {
+    gagSetup()
+    __state(scene)
+    assert.equal(startGag({ kind: 'dizzy' }), null, JSON.stringify(scene))
+  }
+  gagSetup()
+  startGag({ kind: 'dizzy' })
+  __state({ evolveLeft: 5 })
+  ticks(1)
+  assert.equal(__state().gag, null, 'a scene drops the running gag')
+  // during a bite the flinch draws its sweat drop but not its slide
+  gagSetup()
+  __state({ bite: { mode: 'wait', tick: 0, xp: 1, kind: 'opus' } })
+  startGag({ kind: 'flinch' })
+  assert.deepEqual(pxAt(3, 10), G.line)
+  assert.deepEqual(pxAt(13, 7), G.sky)
+  __state({ bite: null })
+})
+
+test('gags: busy while a gag runs, idle once it ends', () => {
+  gagSetup()
+  assert.equal(__state().busy, false)
+  startGag({ kind: 'flinch' })
+  assert.equal(__state().busy, true)
+  ticks(8)
+  assert.equal(__state().busy, false)
+})
+
+test('/omn gags off turns every gag and the nightcap off, on brings them back', async () => {
+  gagSetup()
+  const host = server({})
+  const omn = allHooks()['command.run:omn']
+  assert.deepEqual(await omn(host.$, { args: 'gags' }), { text: 'omn gags on' })
+  __state({ hour: 2 })
+  startGag({ kind: 'dizzy' })
+  assert.deepEqual(await omn(host.$, { args: 'gags off' }), { text: 'omn gags off' })
+  assert.equal(host.data.get('gags'), 'off')
+  let st = __state()
+  assert.equal(st.gag, null)
+  assert.equal(startGag({ kind: 'dizzy' }), null)
+  assert.deepEqual(pxAt(5, 5), G.bg, 'no nightcap')
+  assert.deepEqual(await omn(host.$, { args: 'gags on' }), { text: 'omn gags on' })
+  assert.equal(host.data.get('gags'), 'on')
+  assert.deepEqual(pxAt(5, 5), G.text)
+  assert.deepEqual(await omn(host.$, { args: 'gags maybe' }), { text: 'usage: /omn gags on|off' })
+  __state({ hour: 12 })
+})
+
+test('gags: the three render modes draw the same gag pixels', () => {
+  gagSetup()
+  startGag({ kind: 'dizzy' })
+  const img = frameRgb().map((c) => (c[0] << 16) | (c[1] << 8) | c[2])
+  setRenderEnv({ override: 'halfblock' })
+  const hb = cellsOf(rasterOf(gagPet))
+  setRenderEnv({ override: 'blocks', colorterm: 'truecolor' })
+  const bl = cellsOf(rasterOf(gagPet))
+  setRenderEnv({})
+  for (let y = 0; y < 18; y++) {
+    for (let x = 0; x < 16; x++) {
+      assert.equal(hb[((y >> 1) * 16 + x) * 3 + (y % 2 ? 2 : 1)], img[y * 16 + x])
+      assert.equal(bl[(y * 32 + x * 2) * 3 + 2], img[y * 16 + x])
+    }
+  }
+  resetPortraitState()
+})
+
+test('gags: feet drawn on the ground band move with a slide and stay planted in a squish', () => {
+  const foot = [0x30, 0x20, 0x18]
+  const raw = Uint8Array.from(Buffer.from(gagPet, 'base64'))
+  for (const x of [4, 11]) raw.set(foot, (15 * 16 + x) * 3)
+  const pet = Buffer.from(raw).toString('base64')
+  const px = (x, y) => {
+    const b = Buffer.from(rgbaOf(pet), 'base64')
+    const i = (y * 16 + x) * 4
+    return [b[i], b[i + 1], b[i + 2]]
+  }
+  gagSetup({ frames: [pet] })
+  startGag({ kind: 'flinch' })
+  assert.deepEqual([px(4, 15), px(5, 15), px(12, 15)], [G.ground, foot, foot], 'feet slide with the body, ground fills behind')
+  gagSetup({ frames: [pet] })
+  startGag({ kind: 'squish', held: 1 })
+  ticks(1)
+  assert.deepEqual([px(4, 15), px(11, 15)], [foot, foot])
+  assert.deepEqual(px(4, 14), G.line, 'the bottom body row stays on the feet')
+  resetPortraitState()
+})
+
+test('gags: face props stay put on a blink frame (eyes found once per pet)', () => {
+  const raw = Uint8Array.from(Buffer.from(gagPet, 'base64'))
+  for (const x of [5, 10]) raw.set(G.fill, (9 * 16 + x) * 3)
+  const blink = Buffer.from(raw).toString('base64')
+  const px = (frame, x, y) => {
+    const b = Buffer.from(rgbaOf(frame), 'base64')
+    const i = (y * 16 + x) * 4
+    return [b[i], b[i + 1], b[i + 2]]
+  }
+  gagSetup({ frames: [gagPet, gagPet, blink] })
+  startGag({ kind: 'prop', prop: 'binoculars', held: 1 })
+  for (const f of [gagPet, blink]) assert.deepEqual([px(f, 5, 9), px(f, 10, 9), px(f, 7, 8)], [G.sky, G.sky, G.ink])
+  resetPortraitState()
+})
