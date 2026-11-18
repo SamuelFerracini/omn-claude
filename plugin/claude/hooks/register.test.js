@@ -1303,3 +1303,166 @@ test('gags: face props stay put on a blink frame (eyes found once per pet)', () 
   for (const f of [gagPet, blink]) assert.deepEqual([px(f, 5, 9), px(f, 10, 9), px(f, 7, 8)], [G.sky, G.sky, G.ink])
   resetPortraitState()
 })
+
+// ---- Steady pet while working ----
+import { petTop, seamScore } from './register.js'
+
+// Plays a main-loop turn's first streamed chunk, which ends the thinking dots.
+async function firstChunk(h) {
+  async function* stream() {
+    yield { kind: 'text', text: 'hi' }
+    return { turnId: 't1', index: 0, text: 'hi' }
+  }
+  const gen = h['turn.step']({}, { turnId: 't1', index: 0, model: 'claude-x', messageCount: 1 }, () => stream())
+  while (!(await gen.next()).done);
+}
+// Ticks n frames and returns the highest idleHop seen.
+const hopsIn = (n) => {
+  let most = 0
+  for (let i = 0; i < n; i++) {
+    stepFrame(tickHost)
+    most = Math.max(most, __state().idleHop)
+  }
+  return most
+}
+
+test('working: no idle hop after 8s+ of quiet while a turn is active', async () => {
+  gagSetup()
+  const h = allHooks()
+  await h['turn.start']({}, { turnId: 't1', text: 'hi' }, async (e) => ({ turnId: e.turnId }))
+  await firstChunk(h)
+  ticks(20)
+  assert.equal(__state().gag, null, 'the thinking dots are gone, nothing else holds the pet')
+  assert.equal(__state().working, true)
+  assert.equal(hopsIn(300), 0, '30s of streaming and no hop')
+  assert.equal(__state().quiet, 0)
+  resetPortraitState()
+})
+
+test('working: the idle hop returns after the turn ends', async () => {
+  gagSetup()
+  const h = allHooks()
+  await h['turn.start']({}, { turnId: 't1', text: 'hi' }, async (e) => ({ turnId: e.turnId }))
+  await firstChunk(h)
+  ticks(100)
+  // A subagent's turn ending does not end the main turn.
+  await h['turn.complete'](server({}).$, { turnId: 't2', agentId: 'a1', reason: 'completed' }, async () => ({ text: '' }))
+  assert.equal(__state().working, true)
+  await h['turn.complete'](server({}).$, { turnId: 't1', reason: 'completed' }, async () => ({ text: '' }))
+  assert.equal(__state().working, false)
+  assert.equal(hopsIn(79), 0, 'quiet for 8s first')
+  assert.ok(hopsIn(1) > 0, 'then the idle hop')
+  resetPortraitState()
+})
+
+test('working: turn.abort clears the working state', async () => {
+  gagSetup()
+  const h = allHooks()
+  await h['turn.start']({}, { turnId: 't1', text: 'hi' }, async (e) => ({ turnId: e.turnId }))
+  assert.equal(__state().working, true)
+  await h['turn.abort']({}, { turnId: 't1' }, async () => undefined)
+  assert.equal(__state().working, false)
+  resetPortraitState()
+})
+
+test('working: a missed turn end cannot hold the idle hop back forever', async () => {
+  gagSetup()
+  const h = allHooks()
+  await h['turn.start']({}, { turnId: 't1', text: 'hi' }, async (e) => ({ turnId: e.turnId }))
+  await firstChunk(h)
+  ticks(3000)
+  // A tool call while the turn runs pushes the timeout back.
+  await h['tool.call']({}, { tool: 'Bash', tool_use_id: 'u1', command: 'ls' }, async () => ({ text: 'ok' }))
+  ticks(5990)
+  assert.equal(__state().working, true)
+  ticks(20)
+  assert.equal(__state().working, false, '10 min with no turn event clears it')
+  assert.ok(hopsIn(100) > 0)
+  // A subagent turn's steps do not start the working state on their own.
+  resetPortraitState()
+  gagSetup()
+  await h['turn.start']({}, { turnId: 't3', text: '', agentId: 'a1' }, async (e) => ({ turnId: e.turnId }))
+  assert.equal(__state().working, false)
+  resetPortraitState()
+})
+
+test('working: a gag starting mid-hop cancels the hop, and no hop draws under a gag', () => {
+  gagSetup()
+  const rest = topOf()
+  __state({ idleHop: 4, tick: 0 })
+  assert.equal(topOf(), rest - 2, 'the idle hop lifts the pet on an even tick')
+  startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  assert.equal(__state().idleHop, 0)
+  assert.equal(topOf(), rest)
+  // Even if a hop is left running, a shown gag keeps the body down.
+  __state({ idleHop: 4, tick: 0 })
+  assert.equal(topOf(), rest)
+  resetPortraitState()
+})
+
+// An animated pet: the test pet, the same pet one pixel higher (a breathing
+// bob), and a blink at the lower height.
+const bobPet = (() => {
+  const raw = Uint8Array.from(Buffer.from(gagPet, 'base64'))
+  const up = new Uint8Array(raw)
+  for (let y = 0; y < 15; y++) {
+    for (let x = 0; x < 16; x++) up.set(y + 1 < 15 ? raw.subarray(((y + 1) * 16 + x) * 3, ((y + 1) * 16 + x) * 3 + 3) : G.bg, (y * 16 + x) * 3)
+  }
+  const blink = new Uint8Array(raw)
+  for (const x of [5, 10]) blink.set(G.fill, (9 * 16 + x) * 3)
+  const b64 = (u) => Buffer.from(u).toString('base64')
+  return [gagPet, gagPet, b64(up), b64(up), b64(blink)]
+})()
+const shownRgb = (frame) => {
+  const b = Buffer.from(rgbaOf(frame), 'base64')
+  const out = new Uint8Array(16 * 18 * 3)
+  for (let i = 0; i < 16 * 18; i++) out.set([b[i * 4], b[i * 4 + 1], b[i * 4 + 2]], i * 3)
+  return out
+}
+
+test('steady: the seam nudge is the same on every frame of an animated pet', () => {
+  const raws = bobPet.map((f) => Uint8Array.from(Buffer.from(f, 'base64')))
+  assert.deepEqual(raws.map(petTop), [6, 6, 5, 5, 6], 'the frames bob by one pixel')
+  gagSetup({ frames: bobPet })
+  const tops = bobPet.map((f) => petTop(shownRgb(f)))
+  assert.equal(new Set(tops).size, 1, 'one height on every frame: ' + tops)
+  const s = seamScore(shownRgb(bobPet[0]))
+  assert.ok(s.split <= s.joined, 'the hard color changes sit inside a cell')
+  // The same answer every time a frame comes round, and on a reload of the pet.
+  for (let i = 0; i < 3; i++) assert.deepEqual(bobPet.map((f) => petTop(shownRgb(f))), tops)
+  gagSetup({ frames: [...bobPet] })
+  assert.deepEqual(bobPet.map((f) => petTop(shownRgb(f))), tops)
+  resetPortraitState()
+})
+
+test('steady: gag overlay rows stay constant across frames of an animated pet', () => {
+  const overlay = (frame, g) => {
+    __state({ gag: null })
+    const plain = shownRgb(frame)
+    __state({ gag: g })
+    const dressed = shownRgb(frame)
+    const px = []
+    for (let i = 0; i < 16 * 18; i++) if (plain.subarray(i * 3, i * 3 + 3).join() !== dressed.subarray(i * 3, i * 3 + 3).join()) px.push(i % 16 + ',' + Math.floor(i / 16))
+    return px.join(' ')
+  }
+  for (const spec of [{ kind: 'prop', prop: 'hat' }, { kind: 'prop', prop: 'lens' }, { kind: 'prop', prop: 'binoculars' }, { kind: 'prop', prop: 'pencil' }]) {
+    gagSetup({ frames: bobPet })
+    const g = startGag({ ...spec, held: 1 })
+    const all = bobPet.map((f) => overlay(f, g))
+    assert.ok(all[0].length > 0, spec.prop)
+    assert.equal(new Set(all).size, 1, spec.prop + ': ' + all.join(' | '))
+  }
+  // The nightcap too.
+  gagSetup({ frames: bobPet })
+  const caps = bobPet.map((f) => {
+    __state({ hour: 12 })
+    const plain = shownRgb(f).join()
+    __state({ hour: 2 })
+    const capped = shownRgb(f)
+    return capped.join() === plain ? '' : petTop(capped)
+  })
+  __state({ hour: 12 })
+  assert.equal(new Set(caps).size, 1, 'nightcap: ' + caps)
+  assert.notEqual(caps[0], '')
+  resetPortraitState()
+})
