@@ -1937,13 +1937,17 @@ function paintGags(buf, m0) {
   if (!g && (egg || (!outfit && !lateNight()))) return
   // A bite, hop or seam nudge may have moved the sprite: measure it as it is now.
   // The mouth comes from the idle frame (its chomp diff), shifted along.
+  let dx = 0
   if (g && !bite) {
     const before = measure(buf)
-    gagBody(buf, { ...before, mouth: m0.mouth + (before.top - m0.top) }, g)
+    dx = gagBody(buf, { ...before, mouth: m0.mouth + (before.top - m0.top) }, g)
   }
   const mask = petMask(buf, m0)
   const m = boundsOf(mask, measure(buf))
-  const k = { buf, m, mask, mouth: m0.mouth + (m.top - m0.top), eyes: eyesOf(buf, m, mask), head: headSpan(m, mask) }
+  // The eyes are found once per pet, so a blink frame never moves the props.
+  const fixed = petEyes(portrait)
+  const eyes = fixed ? { y: m.top + fixed.ry, lx: fixed.lx + dx, rx: fixed.rx + dx, w: fixed.w, found: true } : eyesOf(buf, m, mask)
+  const k = { buf, m, mask, mouth: m0.mouth + (m.top - m0.top), eyes, head: headSpan(m, mask) }
   const slots = (g && (gagSlots[g.prop] || gagSlots[g.kind])) || ''
   if (!egg) {
     if (lateNight() && !slots.includes('head')) nightcap(k)
@@ -1983,18 +1987,52 @@ function boundsOf(mask, base) {
   return foot < 0 ? base : { ...base, top, foot, minX, maxX }
 }
 
+// Applies the gag's body motion. Returns how far it slid the pet sideways.
 function gagBody(buf, m, g) {
-  if (g.kind === 'flinch' || g.kind === 'facepalm') {
-    if (g.t === 0) slidePet(buf, 1)
-  } else if (g.kind === 'dizzy') {
-    if (g.t < 4) slidePet(buf, [2, 1, 1, 0][g.t])
-  } else if (g.kind === 'horror') {
-    if (g.t < 8 && g.t % 2 === 1) slidePet(buf, 1)
-  } else if (g.kind === 'squish') {
-    squishPet(buf, m, squishRows(g, m))
-  } else if (g.kind === 'burp') {
-    bulge(buf, m)
+  let dx = 0
+  if (g.kind === 'flinch' || g.kind === 'facepalm') dx = g.t === 0 ? 1 : 0
+  else if (g.kind === 'dizzy') dx = g.t < 4 ? [2, 1, 1, 0][g.t] : 0
+  else if (g.kind === 'horror') dx = g.t < 8 && g.t % 2 === 1 ? 1 : 0
+  else if (g.kind === 'squish') squishPet(buf, m, squishRows(g, m))
+  else if (g.kind === 'burp') bulge(buf, m)
+  slidePet(buf, dx)
+  return dx
+}
+
+// Where a pet's eyes sit, found once across all its frames: the most common
+// answer, as rows below the sprite top and absolute columns. A blink or a
+// frame where the cheeks look like eyes is outvoted. null when no frame has eyes.
+const eyeCache = new WeakMap()
+function petEyes(p) {
+  if (!p) return null
+  if (eyeCache.has(p)) return eyeCache.get(p)
+  const votes = new Map()
+  for (const f of p.frames || []) {
+    let raw
+    try {
+      raw = decodeB64(f)
+    } catch (err) {
+      continue
+    }
+    if (raw.length < 16 * 18 * 3) continue
+    const m = measure(raw)
+    const e = eyesOf(raw, m)
+    if (!e.found) continue
+    const key = [e.y - m.top, e.lx, e.rx, e.w].join()
+    votes.set(key, (votes.get(key) || 0) + 1)
   }
+  let best = ''
+  let n = 0
+  for (const [key, v] of votes) {
+    if (v > n) {
+      n = v
+      best = key
+    }
+  }
+  const [ry, lx, rx, w] = best.split(',').map(Number)
+  const out = best ? { ry, lx, rx, w } : null
+  eyeCache.set(p, out)
+  return out
 }
 
 function gagOverlay(k, g) {
@@ -2050,28 +2088,74 @@ function even(n) {
 }
 
 // Squashes (d > 0) or stretches (d < 0) the body by d rows above the feet.
-// The feet stay planted; the rows above them are resampled.
+// The feet stay planted. A squash drops the rows that look most like a
+// neighbour; a stretch doubles them. Rows with eyes, a mouth or an outline
+// change look least like their neighbours, so they stay, and striped parts
+// (tentacles, legs) lose whole stripes instead of being resampled into noise.
 function squishPet(buf, m, d) {
   const h = m.foot - m.top + 1
   const lo = m.top
   const hi = m.foot - (h >= 8 ? 2 : 1)
   const span = hi - lo + 1
-  if (!d || span < 2) return
-  if (d > 0 && d > span - 1) d = even(span - 1)
+  if (!d || span < 3) return
+  if (d > 0) d = Math.min(d, even(span - 2))
+  if (d < 0) d = -Math.min(-d, even(lo))
   if (!d) return
-  const top = Math.max(0, lo + d)
-  const n = hi - top + 1
   const copy = buf.slice()
   const bg = bgOf(copy)
   const { floor, c: ground } = groundOf(copy)
   const mask = bodyMask(copy, floor, bg)
+  const cell = (y, x) => (mask[y * 16 + x] ? rgb(copy, (y * 16 + x) * 3) : -1)
+  const diff = (a, b) => {
+    let n = 0
+    for (let x = 0; x < 16; x++) {
+      const p = cell(a, x)
+      const q = cell(b, x)
+      if (p === q) continue
+      if (p < 0 || q < 0) n += 400
+      else n += Math.abs((p >> 16) - (q >> 16)) + Math.abs(((p >> 8) & 255) - ((q >> 8) & 255)) + Math.abs((p & 255) - (q & 255))
+    }
+    return n
+  }
+  const rows = []
+  for (let y = lo; y <= hi; y++) rows.push(y)
+  const mid = (rows.length - 1) / 2
+  // The face stays: the eye row (and the one under it, for tall eyes) and the mouth.
+  const eyes = eyesOf(copy, m, mask)
+  const keep = new Set([m.mouth])
+  if (eyes.found) {
+    keep.add(eyes.y)
+    keep.add(eyes.y + 1)
+  }
+  // The first and last rows (crown and the row on the feet) are never picked.
+  // A stretch only doubles rows in the top third, above the face.
+  const pick = () => {
+    let best = -1
+    let cost = Infinity
+    const last = d > 0 ? rows.length - 2 : Math.max(1, Math.floor(rows.length / 3))
+    for (let i = 1; i <= last; i++) {
+      if (keep.has(rows[i])) continue
+      const c = Math.min(diff(rows[i], rows[i - 1]), diff(rows[i], rows[i + 1])) * 16 + Math.abs(i - mid)
+      if (c < cost) {
+        cost = c
+        best = i
+      }
+    }
+    return best
+  }
+  for (let k = 0; k < Math.abs(d); k++) {
+    const i = pick()
+    if (i < 0) break
+    if (d > 0) rows.splice(i, 1)
+    else rows.splice(i, 0, rows[i])
+  }
   for (let y = lo; y <= hi; y++) {
     for (let x = 0; x < 16; x++) if (mask[y * 16 + x]) setPx(buf, x, y, y >= floor && ground ? ground : bg)
   }
-  for (let y = top; y <= hi; y++) {
-    const src = lo + Math.floor(((y - top) * span) / n)
-    for (let x = 0; x < 16; x++) if (mask[src * 16 + x]) copyPx(buf, x, y, copy, x, src)
-  }
+  const top = hi - rows.length + 1
+  rows.forEach((src, j) => {
+    for (let x = 0; x < 16; x++) if (mask[src * 16 + x]) copyPx(buf, x, top + j, copy, x, src)
+  })
 }
 
 // Belly rows (below the mouth) grow one pixel out on each side.
@@ -2138,8 +2222,8 @@ function headSpan(m, mask) {
   return best
 }
 
-// The eyes: the first pair of matching, rare (at most 4 pixels), non-body-fill
-// pixels inside the outline, mirrored across the row or the sprite. Without one,
+// The eyes: a pair of matching, rare (at most 4 pixels), non-body-fill pixels
+// inside the outline, mirrored across the row or the sprite. Without one,
 // a guess 40% down the body. lx is the left eye's left pixel, rx the right
 // eye's right pixel, w the eye width.
 function eyesOf(buf, m, mask) {
@@ -2161,6 +2245,10 @@ function eyesOf(buf, m, mask) {
     }
   }
   const inside = (x, y) => at(x, y) && at(x - 1, y) && at(x + 1, y) && at(x, y - 1) && at(x, y + 1)
+  const contrast = (c) => Math.abs((c >> 16) - (fill >> 16)) + Math.abs(((c >> 8) & 255) - ((fill >> 8) & 255)) + Math.abs((c & 255) - (fill & 255))
+  // Of every pair, the one that stands out most from the body fill: pupils,
+  // not a shine or blush. Ties go to the higher row.
+  let best = null
   const hi = m.top + Math.ceil((m.foot - m.top) * 0.75)
   for (let y = m.top + 1; y <= hi; y++) {
     const [r0, r1] = rowSpan(mk, y)
@@ -2169,14 +2257,16 @@ function eyesOf(buf, m, mask) {
       if (!inside(x, y) || c === fill || count.get(c) > 4) continue
       let w = 1
       while (w < 2 && at(x + w, y) && col(x + w, y) === c) w++
-      for (const mid of [r0 + r1, m.minX + m.maxX]) {
+      pair: for (const mid of [r0 + r1, m.minX + m.maxX]) {
         for (const rx of [mid - x, mid - x - 1, mid - x + 1]) {
           if (rx - w + 1 <= x + w || rx > 15 || col(rx, y) !== c || !inside(rx, y)) continue
-          return { y, lx: x, rx, w, found: true }
+          if (!best || contrast(c) > best.score) best = { y, lx: x, rx, w, found: true, score: contrast(c) }
+          break pair
         }
       }
     }
   }
+  if (best) return { y: best.y, lx: best.lx, rx: best.rx, w: best.w, found: true }
   const cx = Math.round((m.minX + m.maxX) / 2)
   return { y: m.top + Math.round((m.foot - m.top) * 0.4), lx: cx - 2, rx: cx + 2, w: 1, found: false }
 }
@@ -2263,17 +2353,30 @@ function clone(k, g) {
     puff(k, x0 + (cw >> 1), y0 + (ch >> 1), g.t)
     return
   }
-  // With no room beside the pet, the clone stands in front of its edge.
+  // With no room beside the pet, the clone stands in front of its edge, with a
+  // background-colored rim so it reads as its own little figure.
   const copy = buf.slice()
+  const on = new Uint8Array(16 * 18)
   for (let cy = 0; cy < ch; cy++) {
     for (let cx = 0; cx < cw; cx++) {
       const sx = m.minX + cx * 2
       const sy = m.top + cy * 2
       const dx = x0 + cx
       const dy = y0 + cy
-      if (!maskAt(mask, sx, sy) || dx > 15 || dy > 17) continue
-      copyPx(buf, dx, dy, copy, sx, sy)
+      if (maskAt(mask, sx, sy) && dx <= 15 && dy <= 17) on[dy * 16 + dx] = 1
     }
+  }
+  const bg = bgOf(copy)
+  for (let id = 0; id < on.length; id++) {
+    if (!on[id]) continue
+    const x = id % 16
+    const y = Math.floor(id / 16)
+    for (const [ax, ay] of [[x - 1, y], [x + 1, y], [x, y - 1]]) {
+      if (ax >= 0 && ax < 16 && ay >= 0 && !on[ay * 16 + ax] && maskAt(mask, ax, ay)) setPx(buf, ax, ay, bg)
+    }
+  }
+  for (let id = 0; id < on.length; id++) {
+    if (on[id]) copyPx(buf, id % 16, Math.floor(id / 16), copy, m.minX + (id % 16 - x0) * 2, m.top + (Math.floor(id / 16) - y0) * 2)
   }
 }
 

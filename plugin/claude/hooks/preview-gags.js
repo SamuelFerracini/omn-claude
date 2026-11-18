@@ -1,4 +1,5 @@
-// Run: node plugin/claude/hooks/preview-gags.js <pet-id | pet.json> [--gags a,b] [--modes halfblock,blocks,image] [--png out.png]
+// Run: node plugin/claude/hooks/preview-gags.js <pet-id | pet.json> [--gags a,b] [--modes halfblock,blocks,image] [--png out.png] [--every]
+// --every shows every tick instead of the picked ones.
 // Draws each pet gag through the plugin's own render paths: the halfblock and
 // blocks rasters and the image mode's RGBA. pet.json is a /p/<id>.json reply or
 // a list of { species, stage, payload } (pick with --pets Cat:2,Robot:3).
@@ -36,6 +37,7 @@ const gags = {
   sonnet: { start: () => __state({ outfit: 'sonnet' }), at: [0] },
   haiku: { start: () => __state({ outfit: 'haiku' }), at: [0] },
   nightcap: { start: () => __state({ hour: 2 }), at: [0] },
+  idle: { start: () => null, at: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
 }
 
 async function load(src) {
@@ -58,13 +60,15 @@ const $ = { ui: { invalidate() {} } }
 function play(payload, name) {
   const spec = gags[name]
   resetPortraitState()
-  __state({ portrait: { ...payload, frames: [payload.frames[0]], status: 'awake' }, outfit: '', hour: 12, failRun: 0, gagsOn: true })
+  __state({ portrait: { ...payload, status: 'awake' }, outfit: '', hour: 12, failRun: 0, gagsOn: true })
   const g = spec.start()
   const shots = []
-  const frame = payload.frames[0]
-  for (let t = 0; t <= Math.max(...spec.at); t++) {
+  // The idle frames advance one per tick, as in the pane.
+  const at = every ? Array.from({ length: Math.max(...spec.at) + 1 }, (_, i) => i) : spec.at
+  for (let t = 0; t <= Math.max(...at); t++) {
     if (spec.release === t) releaseGag(g)
-    if (spec.at.includes(t)) shots.push({ t, frame, cells: snap(frame) })
+    const frame = payload.frames[t % payload.frames.length]
+    if (at.includes(t)) shots.push({ t, frame, cells: snap(frame) })
     stepFrame($)
   }
   return shots
@@ -152,6 +156,7 @@ function png(path, sheet) {
   writeFileSync(path, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]))
 }
 
+const every = args.includes('--every')
 const pets = await load(source)
 const names = (opt('gags', '') || Object.keys(gags).join(',')).split(',')
 const modes = (opt('modes', '') || 'halfblock,blocks,image').split(',')

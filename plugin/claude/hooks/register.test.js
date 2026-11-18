@@ -1077,9 +1077,11 @@ test('gag 6, compact squish: squashes to ~60% while compacting, then springs bac
   assert.equal(__state().gag.kind, 'squish')
   assert.equal(topOf(), 8, 'first tick: half the squash')
   ticks(1)
-  assert.equal(topOf(), 10, 'body 9 rows -> 5 above the kept feet: 60%')
+  // 4 rows asked; this small pet has only 2 droppable rows once its eyes and mouth stay
+  assert.equal(topOf(), 8)
+  assert.deepEqual([pxAt(5, 9), pxAt(10, 9), pxAt(5, 8)], [G.eye, G.eye, G.line], 'the rows above the eyes go, the eyes stay')
   ticks(40)
-  assert.equal(topOf(), 10, 'holds while the compaction runs')
+  assert.equal(topOf(), 8, 'holds while the compaction runs')
   const done = { messages: [], tokensBefore: 10, tokensAfter: 5 }
   d.resolve(done)
   assert.equal(await run, done)
@@ -1088,7 +1090,7 @@ test('gag 6, compact squish: squashes to ~60% while compacting, then springs bac
     tops.push(topOf())
     ticks(1)
   }
-  assert.deepEqual(tops, [10, 10, 10, 10, 10, 10, 4, 4, 8, 6])
+  assert.deepEqual(tops, [8, 8, 8, 8, 8, 8, 4, 4, 8, 6])
   assert.ok(tops.every((t) => t % 2 === 0), 'whole cells only')
   assert.equal(__state().gag, null)
   // a precompute or a subagent's compaction does not squish
@@ -1296,5 +1298,20 @@ test('gags: feet drawn on the ground band move with a slide and stay planted in 
   ticks(1)
   assert.deepEqual([px(4, 15), px(11, 15)], [foot, foot])
   assert.deepEqual(px(4, 14), G.line, 'the bottom body row stays on the feet')
+  resetPortraitState()
+})
+
+test('gags: face props stay put on a blink frame (eyes found once per pet)', () => {
+  const raw = Uint8Array.from(Buffer.from(gagPet, 'base64'))
+  for (const x of [5, 10]) raw.set(G.fill, (9 * 16 + x) * 3)
+  const blink = Buffer.from(raw).toString('base64')
+  const px = (frame, x, y) => {
+    const b = Buffer.from(rgbaOf(frame), 'base64')
+    const i = (y * 16 + x) * 4
+    return [b[i], b[i + 1], b[i + 2]]
+  }
+  gagSetup({ frames: [gagPet, gagPet, blink] })
+  startGag({ kind: 'prop', prop: 'binoculars', held: 1 })
+  for (const f of [gagPet, blink]) assert.deepEqual([px(f, 5, 9), px(f, 10, 9), px(f, 7, 8)], [G.sky, G.sky, G.ink])
   resetPortraitState()
 })
