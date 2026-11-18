@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.34'
+const VERSION = '0.4.35'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -63,6 +63,12 @@ const sessionId = sessionNonce()
 const leaseMs = 90000
 let quiet = 0
 let idleHop = 0
+// Ticks left of the main-loop turn in progress (working while > 0). A turn
+// start sets it, its end or abort clears it, and every turn step or tool call
+// refills it. It also runs down on its own, so a missed end event cannot hold
+// the idle hop back for more than workCap ticks of silence.
+let workLeft = 0
+const workCap = 6000
 let sparkLeft = 0
 let lastMealAt = 0
 let combo = 0
@@ -142,6 +148,7 @@ export function register(on) {
     bites = []
     bite = null
     idleHop = 0
+    workLeft = 0
     sparkLeft = 0
     quiet = 0
     clearGags()
@@ -221,6 +228,7 @@ export function register(on) {
   on('turn.start', async ($, e, next) => {
     // Only the main loop thinks out loud. A subagent's turn has its own agentId.
     if (e.agentId === undefined) {
+      workLeft = workCap
       failRun = 0
       endThink()
       thinking = startGag({ kind: 'think', held: 1 })
@@ -230,6 +238,7 @@ export function register(on) {
 
   on('turn.step', async function* ($, e, next) {
     const main = e.agentId === undefined
+    stillWorking()
     // The first streamed chunk of the main loop ends the thinking dots.
     const result = yield* (main ? onFirst(next(e), endThink) : next(e))
     tally(e, result)
@@ -238,6 +247,7 @@ export function register(on) {
 
   // The call itself is never changed: whatever next(e) answers (or throws) goes back as is.
   on('tool.call', async ($, e, next) => {
+    stillWorking()
     const gags = toolGags(e)
     let res
     try {
@@ -258,6 +268,7 @@ export function register(on) {
 
   on('turn.abort', async ($, e, next) => {
     const result = await next(e)
+    workLeft = 0
     abortGag()
     return result
   })
@@ -273,7 +284,10 @@ export function register(on) {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId === undefined) endThink()
+    if (e.agentId === undefined) {
+      workLeft = 0
+      endThink()
+    }
     if (e.reason === 'aborted') abortGag()
     const id = e.turnId || ''
     const bag = pending.get(id) || pending.get('')
@@ -374,6 +388,7 @@ function stepFrame($) {
   stepGag()
   if (sparkLeft > 0 && !bite) sparkLeft--
   if (idleHop > 0) idleHop--
+  if (workLeft > 0) workLeft--
   if (wakeLeft > 0) {
     wakeLeft--
     if (wakeLeft === 0) finishWake($)
@@ -403,8 +418,15 @@ function stepFrame($) {
   $.ui.invalidate('ui.render')
 }
 
+// A turn in progress keeps the pet busy, so quiet never reaches quietAt and
+// the idle hop waits until the turn is over.
 function busy() {
-  return wakeLeft > 0 || reviveLeft > 0 || arriveLeft > 0 || evolveLeft > 0 || gleamLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0 || !!gag || !!gagNext
+  return workLeft > 0 || wakeLeft > 0 || reviveLeft > 0 || arriveLeft > 0 || evolveLeft > 0 || gleamLeft > 0 || sparkLeft > 0 || bite || bites.length > 0 || bits.length > 0 || idleHop > 0 || !!gag || !!gagNext
+}
+
+// A turn step or tool call while a turn runs pushes the safety timeout back.
+function stillWorking() {
+  if (workLeft > 0) workLeft = workCap
 }
 
 function petDead() {
@@ -518,10 +540,13 @@ export function __state(patch) {
     if ('hour' in patch) gagHour = patch.hour
     if ('failRun' in patch) failRun = patch.failRun
     if ('meals' in patch) [mealAvg, mealN] = patch.meals
+    if ('idleHop' in patch) idleHop = patch.idleHop
+    if ('quiet' in patch) quiet = patch.quiet
+    if ('tick' in patch) tick = patch.tick
   }
   return {
     reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait, petId, arriveLeft, arriveFrom, arriveTo, arrivePhase: arriveLeft > 0 ? arrivePhase() : '', note, namePrompt,
-    gag, gagNext: gagNext && gagNext.g, gagsOn, failRun, slowLeft, mealAvg, mealN, busy: !!busy(),
+    gag, gagNext: gagNext && gagNext.g, gagsOn, failRun, slowLeft, mealAvg, mealN, busy: !!busy(), working: workLeft > 0, idleHop, quiet,
   }
 }
 export { setRenderEnv, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, stepFrame, startGag, releaseGag, eyesOf }
@@ -851,7 +876,7 @@ export function pipRow(v, pulse) {
 }
 
 export { expPct }
-export { groundOf, floorAt, bodyMask, measure, liftPet, hop, petTop }
+export { groundOf, floorAt, bodyMask, measure, liftPet, hop, petTop, seamScore }
 
 function compact(n) {
   if (n >= 1000000000) return unit(n, 1000000000, 'B')
@@ -1176,11 +1201,18 @@ function present(b64) {
   if (pose && pose.lift) liftPet(buf, pose.lift)
   if (pose && pose.open && !hasChomp) dropMouth(buf, m, pose.lift)
   if (pose && pose.token != null) paintToken(buf, m.tx, pose.token, crumbRgb[bite.kind] || crumbRgb.other)
-  if (liftNow()) hop(buf)
-  // A one-pixel rise puts the crown on the seam between two cells.
-  // Nudge so the hard color change sits inside one cell. Both rows stay.
-  if (seamSplit(buf)) liftPet(buf, petTop(buf) > 0 ? 1 : -1)
-  paintGags(buf, m)
+  let lift = pose && pose.lift ? pose.lift : 0
+  if (liftNow()) {
+    hop(buf)
+    lift += 2
+  }
+  // A one-pixel rise puts the crown on the seam between two cells, and most
+  // idle animations bob the pet by one pixel. Every frame of a pet is set to
+  // one height, chosen so the hard color change sits inside one cell.
+  const key = hasChomp ? portrait.chomp : b64
+  const steady = steadyLift(key, buf)
+  if (steady) liftPet(buf, steady)
+  paintGags(buf, m, lift, key)
   paintBits(buf)
   paintSpark(buf)
   paintSleep(buf)
@@ -1192,7 +1224,7 @@ function present(b64) {
 
 function liftNow() {
   if (tick % 2 !== 0) return false
-  return stirring() || idleHop > 0 || reviveHop()
+  return stirring() || (idleHop > 0 && !gagShown()) || reviveHop()
 }
 
 // The second half of the glow and the start of the rise hop.
@@ -1464,6 +1496,12 @@ function floorAt(raw) {
 
 // True when the sharp color changes sit on the boundary between two cells.
 function seamSplit(buf) {
+  const s = seamScore(buf)
+  return s.split > s.joined
+}
+
+// How much sharp color change sits on a cell seam (split) and inside a cell (joined).
+function seamScore(buf) {
   const bg = bgOf(buf)
   const floor = floorAt(buf)
   const mask = bodyMask(buf, floor, bg)
@@ -1484,7 +1522,99 @@ function seamSplit(buf) {
       }
     }
   }
-  return split > joined
+  return { split, joined }
+}
+
+// How far each frame of a pet is lifted so all its frames stand at one
+// height. Most idle animations bob the pet by one pixel, and a one-pixel bob
+// always puts one of its heights on the cell seam. The frames are grouped by
+// the height they stand at, and every frame is moved to the height whose own
+// frames keep their hard color changes inside a cell (the most frames, then
+// the lowest). When no height does, the pet is nudged one pixel from its most
+// common height, up unless the top is already row 0. Found once per pet, like
+// its eyes, so the height never flips from frame to frame. A frame of no known
+// pet gets the nudge for this frame alone (buf as drawn so far).
+const steadyCache = new WeakMap()
+function steadyLift(b64, buf) {
+  for (const p of [portrait, wakeFrom, evolveFrom, reviveFrom, reviveTo, arriveFrom, arriveTo]) {
+    const lifts = steadyOf(p)
+    if (lifts && lifts.has(b64)) return lifts.get(b64)
+  }
+  return seamSplit(buf) ? (petTop(buf) > 0 ? 1 : -1) : 0
+}
+
+function steadyOf(p) {
+  if (!p || !p.frames || !p.frames.length) return null
+  if (steadyCache.has(p)) return steadyCache.get(p)
+  const out = new Map()
+  steadyCache.set(p, out)
+  const raws = []
+  for (const f of p.frames) {
+    try {
+      const raw = decodeB64(f)
+      if (raw.length >= 16 * 18 * 3) raws.push([f, raw])
+    } catch (err) {}
+  }
+  if (!raws.length) return out
+  const ref = raws[0][1]
+  // Each height, in rows below the first frame: its frames, seam scores and top.
+  const heights = new Map()
+  const downs = raws.map(([, raw]) => {
+    const d = bobOf(ref, raw)
+    const h = heights.get(d) || { d, n: 0, split: 0, joined: 0, top: 18 }
+    const s = seamScore(raw)
+    h.n++
+    h.split += s.split
+    h.joined += s.joined
+    const t = petTop(raw)
+    if (t >= 0) h.top = Math.min(h.top, t)
+    heights.set(d, h)
+    return d
+  })
+  const better = (a, b) => (a.n !== b.n ? a.n > b.n : a.d > b.d)
+  let clean = null
+  let common = null
+  for (const h of heights.values()) {
+    if (h.split <= h.joined && (!clean || better(h, clean))) clean = h
+    if (!common || better(h, common)) common = h
+  }
+  const target = clean ? clean.d : common.top > 0 ? common.d - 1 : common.d + 1
+  raws.forEach(([f], i) => out.set(f, downs[i] - target))
+  if (typeof p.chomp === 'string' && !out.has(p.chomp)) {
+    try {
+      const raw = decodeB64(p.chomp)
+      if (raw.length >= 16 * 18 * 3) out.set(p.chomp, bobOf(ref, raw) - target)
+    } catch (err) {}
+  }
+  return out
+}
+
+// How many rows lower raw stands than ref (negative: higher), up to 2, by
+// the closest match above the ground line. Ties go to the smaller move.
+function bobOf(ref, raw) {
+  const floor = floorAt(ref)
+  let best = 0
+  let cost = Infinity
+  for (const dy of [0, 1, -1, 2, -2]) {
+    let c = 0
+    for (let y = 0; y < floor; y++) {
+      const sy = y - dy
+      for (let x = 0; x < 16; x++) {
+        const i = (y * 16 + x) * 3
+        if (sy < 0 || sy >= floor) {
+          c += 64
+          continue
+        }
+        const j = (sy * 16 + x) * 3
+        c += Math.abs(ref[j] - raw[i]) + Math.abs(ref[j + 1] - raw[i + 1]) + Math.abs(ref[j + 2] - raw[i + 2])
+      }
+    }
+    if (c < cost) {
+      cost = c
+      best = dy
+    }
+  }
+  return best
 }
 
 // Stars, rain, mist, embers, and smoke are scene effects. Every other
@@ -1554,18 +1684,7 @@ function measure(raw) {
     minX = 4
     maxX = 11
   }
-  let mouth = top + Math.round((foot - top) * 0.62)
-  if (portrait && portrait.chomp) {
-    const alt = decodeB64(portrait.chomp)
-    let diff = -1
-    for (let y = top; y < floor && y < 18; y++) {
-      for (let x = 0; x < 16; x++) {
-        const i = (y * 16 + x) * 3
-        if (rgb(raw, i) !== rgb(alt, i)) diff = y
-      }
-    }
-    if (diff > top) mouth = diff - 1
-  }
+  const mouth = mouthAt(raw, portrait && portrait.chomp ? decodeB64(portrait.chomp) : null, top, foot, floor)
   return {
     bg: bg,
     floor: floor,
@@ -1578,6 +1697,23 @@ function measure(raw) {
     sky: Math.max(0, top - 3),
     ground: Math.min(17, foot + 1 < floor ? foot + 1 : floor),
   }
+}
+
+// The mouth row: just above the lowest row where the chomp frame (alt)
+// differs, or 62% down the body without one.
+function mouthAt(raw, alt, top, foot, floor) {
+  let mouth = top + Math.round((foot - top) * 0.62)
+  if (alt) {
+    let diff = -1
+    for (let y = top; y < floor && y < 18; y++) {
+      for (let x = 0; x < 16; x++) {
+        const i = (y * 16 + x) * 3
+        if (rgb(raw, i) !== rgb(alt, i)) diff = y
+      }
+    }
+    if (diff > top) mouth = diff - 1
+  }
+  return mouth
 }
 
 function liftPet(buf, lift) {
@@ -1784,6 +1920,8 @@ function startGag(spec) {
     if (kind !== 'facepalm') return null
     kind = 'flinch'
   }
+  // A gag draws on a body that is not hopping.
+  idleHop = 0
   const g = { kind, prop: spec.prop || '', held: spec.held || 0, t: 0, left: gagLen[kind], prio: gagPrio[kind] }
   if (kind === 'confetti') spawnConfetti(g)
   if (!gag || g.prio > gag.prio) {
@@ -1940,38 +2078,108 @@ function stepConfetti(g) {
 
 // paintGags draws the persistent nightcap, then the running gag.
 // m is the idle frame's measure (before any lift).
-function paintGags(buf, m0) {
+// lift is how far a bite or hop raised the body this frame, and key the frame
+// drawn: head overlays sit on the pet's resting head (found once per pet)
+// raised by lift, so they move with the body as one piece and never with the
+// shape of one frame.
+function paintGags(buf, m0, lift = 0, key = null) {
   if (!gagsOn || !portrait || sceneOn() || !petAwake()) return
   const egg = petEgg()
   const g = gagShown() ? gag : null
   if (!g && (egg || !lateNight())) return
   // A bite, hop or seam nudge may have moved the sprite: measure it as it is now.
   // The mouth comes from the idle frame (its chomp diff), shifted along.
+  const rest = restOf(portrait, key)
   let dx = 0
   if (g && !bite) {
     const before = measure(buf)
-    dx = gagBody(buf, { ...before, mouth: m0.mouth + (before.top - m0.top) }, g)
+    dx = gagBody(buf, { ...before, mouth: rest ? rest.mouth - lift : m0.mouth + (before.top - m0.top) }, g)
   }
   const mask = petMask(buf, m0)
   const m = boundsOf(mask, measure(buf))
+  // A squish moves the crown on purpose, so its frames are measured as drawn.
+  const still = rest && !(g && !bite && g.kind === 'squish')
+  const top = still ? rest.top - lift : m.top
+  const head = still ? [rest.head[0] + dx, rest.head[1] + dx, rest.head[2] - lift] : headSpan(m, mask)
   // The eyes are found once per pet, so a blink frame never moves the props.
   const fixed = petEyes(portrait)
-  const eyes = fixed ? { y: m.top + fixed.ry, lx: fixed.lx + dx, rx: fixed.rx + dx, w: fixed.w, found: true } : eyesOf(buf, m, mask)
-  const k = { buf, m, mask, mouth: m0.mouth + (m.top - m0.top), eyes, head: headSpan(m, mask) }
+  const eyes = fixed ? { y: top + fixed.ry, lx: fixed.lx + dx, rx: fixed.rx + dx, w: fixed.w, found: true } : eyesOf(buf, m, mask)
+  const k = { buf, m, mask, top, mouth: still ? rest.mouth - lift : m0.mouth + (m.top - m0.top), eyes, head }
   if (!egg && lateNight() && !(g && (headGags.has(g.kind) || headGags.has(g.prop)))) nightcap(k)
   if (g) gagOverlay(k, g)
 }
 
 // The pet's mask for placing overlays. A bite's food token is drawn in the
 // pet's columns before this runs; it is not the pet, so its pixels are left out.
+// A pet that stands over the ground's top row hides that row from groundOf,
+// so the row's ground pixels are left out too: they would widen the body on
+// some frames and move the hat to another row.
 function petMask(buf, m0) {
-  const mask = bodyMask(buf, floorAt(buf), bgOf(buf))
+  const mask = restMask(buf)
   if (!bite) return mask
   const c = crumbRgb[bite.kind] || crumbRgb.other
   for (let y = 0; y < 18; y++) {
     for (const x of [m0.tx, m0.tx + 1]) if (maskAt(mask, x, y) && samePx(buf, (y * 16 + x) * 3, c)) mask[y * 16 + x] = 0
   }
   return mask
+}
+
+function restMask(buf) {
+  const { floor, c: ground } = groundOf(buf)
+  const mask = bodyMask(buf, floor, bgOf(buf))
+  if (ground && floor > 0 && floor < 18) {
+    for (let x = 0; x < 16; x++) if (samePx(buf, ((floor - 1) * 16 + x) * 3, ground)) mask[(floor - 1) * 16 + x] = 0
+  }
+  return mask
+}
+
+// The pet's resting crown row, head span ([left, right, row]) and mouth row,
+// the most common answers across its frames as they are drawn (each at its
+// steady height, the chomp frame too). A flame that flickers wide, a blink
+// or a wave frame is outvoted.
+// null when key is not one of the pet's frames.
+const restCache = new WeakMap()
+function restOf(p, key) {
+  const lifts = steadyOf(p)
+  if (!lifts || !lifts.has(key)) return null
+  if (restCache.has(p)) return restCache.get(p)
+  const steadied = (f) => {
+    const buf = decodeB64(f)
+    if (lifts.get(f)) liftPet(buf, lifts.get(f))
+    return buf
+  }
+  const alt = typeof p.chomp === 'string' && lifts.has(p.chomp) ? steadied(p.chomp) : null
+  const heads = new Map()
+  const mouths = new Map()
+  const vote = (tally, v) => tally.set(v, (tally.get(v) || 0) + 1)
+  for (const f of p.frames) {
+    if (!lifts.has(f)) continue
+    const buf = steadied(f)
+    const mask = restMask(buf)
+    const m = boundsOf(mask, measure(buf))
+    vote(heads, [m.top, ...headSpan(m, mask)].join())
+    vote(mouths, mouthAt(buf, alt, m.top, m.foot, floorAt(buf)))
+  }
+  const best = (tally) => {
+    let out = null
+    let n = 0
+    for (const [v, c] of tally) {
+      if (c > n) {
+        n = c
+        out = v
+      }
+    }
+    return out
+  }
+  const head = best(heads)
+  if (head === null) {
+    restCache.set(p, null)
+    return null
+  }
+  const [top, a, b, y] = head.split(',').map(Number)
+  const out = { top, head: [a, b, y], mouth: best(mouths) }
+  restCache.set(p, out)
+  return out
 }
 
 function boundsOf(mask, base) {
@@ -2005,12 +2213,14 @@ function gagBody(buf, m, g) {
 
 // Where a pet's eyes sit, found once across all its frames: the most common
 // answer, as rows below the sprite top and absolute columns. A blink or a
-// frame where the cheeks look like eyes is outvoted. null when no frame has eyes.
+// frame where the cheeks look like eyes is outvoted. When no frame has eyes,
+// the most common guess, so face props still hold still. null without frames.
 const eyeCache = new WeakMap()
 function petEyes(p) {
   if (!p) return null
   if (eyeCache.has(p)) return eyeCache.get(p)
   const votes = new Map()
+  const guesses = new Map()
   for (const f of p.frames || []) {
     let raw
     try {
@@ -2021,13 +2231,13 @@ function petEyes(p) {
     if (raw.length < 16 * 18 * 3) continue
     const m = measure(raw)
     const e = eyesOf(raw, m)
-    if (!e.found) continue
     const key = [e.y - m.top, e.lx, e.rx, e.w].join()
-    votes.set(key, (votes.get(key) || 0) + 1)
+    const tally = e.found ? votes : guesses
+    tally.set(key, (tally.get(key) || 0) + 1)
   }
   let best = ''
   let n = 0
-  for (const [key, v] of votes) {
+  for (const [key, v] of votes.size ? votes : guesses) {
     if (v > n) {
       n = v
       best = key
@@ -2275,7 +2485,7 @@ function eyesOf(buf, m, mask) {
 
 function thinkDots(k, g) {
   const n = 1 + (Math.floor(g.t / 3) % 3)
-  const y = Math.max(0, k.m.top - 2)
+  const y = Math.max(0, k.top - 2)
   const x0 = Math.max(0, Math.min(11, k.head[1] - 1))
   for (let i = 0; i < n; i++) paint(k.buf, x0 + i * 2, y, pxText)
 }
@@ -2455,7 +2665,7 @@ function horror(k) {
     }
   }
   const x = Math.min(15, k.head[1] + 1)
-  const top = Math.max(3, k.m.top - 1)
+  const top = Math.max(3, k.top - 1)
   paint(k.buf, x, top - 3, pxWarn)
   paint(k.buf, x, top - 2, pxWarn)
   paint(k.buf, x, top, pxWarn)
@@ -2765,6 +2975,7 @@ function resetPortraitState() {
   bites = []
   bite = null
   idleHop = 0
+  workLeft = 0
   clearGags()
 }
 
