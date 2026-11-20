@@ -1466,3 +1466,112 @@ test('steady: gag overlay rows stay constant across frames of an animated pet', 
   assert.notEqual(caps[0], '')
   resetPortraitState()
 })
+
+// ---- Head props follow the head; food draws on top ----
+// There are no species files in the repo, so these pets stand in for the range
+// of the real ones: a box body (x 3..12) whose top row is anywhere from row 0
+// to row 8 (tall pets touch the top of the frame), with or without a one-pixel
+// antenna over the head, and a narrow and a wide body.
+function shapePet(top, { antenna = false, left = 3, right = 12 } = {}) {
+  const px = []
+  for (let y = 0; y < 18; y++) {
+    for (let x = 0; x < 16; x++) {
+      let c = y >= 15 ? G.ground : G.bg
+      const t = top + (antenna ? 1 : 0)
+      if (y >= t && y <= 14 && x >= left && x <= right) c = y === t || y === 14 || x === left || x === right ? G.line : G.fill
+      if (antenna && y === top && x === (left + right) >> 1) c = G.line
+      if (y === 14 && x > left && x < right) c = G.eye
+      px.push(...c)
+    }
+  }
+  return Buffer.from(Uint8Array.from(px)).toString('base64')
+}
+const rgbaPx = (frame, x, y) => {
+  const b = Buffer.from(rgbaOf(frame), 'base64')
+  const i = (y * 16 + x) * 4
+  return [b[i], b[i + 1], b[i + 2]]
+}
+const sameRgb = (a, b) => a.join() === b.join()
+// How far the body was lifted this frame (negative: lowered by the seam nudge).
+// The bottom row's inner pixels are a marker color that sits on row 14 at rest.
+// Lowered into the ground band they are hidden, and then the head row (the first
+// outline pixel on the left wall) gives the shift.
+function liftOf(frame, p) {
+  for (let y = 14; y >= 0; y--) for (let x = 0; x < 16; x++) if (sameRgb(rgbaPx(frame, x, y), G.eye)) return 14 - y
+  for (let y = 0; y < 15; y++) if (sameRgb(rgbaPx(frame, p.left, y), G.line)) return p.top - y
+  return null
+}
+const pets = []
+for (let top = 0; top <= 8; top++) {
+  for (const antenna of [false, true]) {
+    for (const [left, right] of [[3, 12], [5, 10]]) pets.push({ top: top + (antenna ? 1 : 0), frame: shapePet(top, { antenna, left, right }), left, right })
+  }
+}
+
+// What lifts the body: nothing, an idle hop (no gag shown, so the nightcap only),
+// and a bite catch (2 and 4 rows up), which a gag draws on.
+const liftModes = [
+  { name: 'rest', setup: () => {} },
+  { name: 'hop', setup: () => __state({ idleHop: 5 }), noGag: true },
+  { name: 'bite2', setup: () => __state({ bite: { mode: 'catch', tick: 1, xp: 1, kind: 'other' } }) },
+  { name: 'bite4', setup: () => __state({ bite: { mode: 'catch', tick: 3, xp: 1, kind: 'other' } }) },
+]
+
+test('head props: hard hat and nightcap keep their gap to the head on every frame, off screen too', () => {
+  for (const kind of ['hat', 'nightcap']) {
+    for (const p of pets) {
+      for (const mode of liftModes) {
+        if (kind === 'hat' && mode.noGag) continue
+        gagSetup({ frames: [p.frame] })
+        __state({ tick: 0, idleHop: 0, hour: kind === 'nightcap' ? 2 : 12 })
+        if (kind === 'hat') startGag({ kind: 'prop', prop: 'hat', held: 1 })
+        mode.setup()
+        const lift = liftOf(p.frame, p)
+        const head = p.top - lift
+        const who = `${kind} top ${p.top} x ${p.left}-${p.right} ${mode.name} lift ${lift}`
+        assert.ok(lift !== null, who)
+        if (mode.name !== 'rest') assert.ok(lift > 0, who)
+        const mid = (p.left + p.right) >> 1
+        // the first hat row above the head: brim for the hard hat, band for the nightcap
+        const row = head - 1
+        if (row >= 0) assert.deepEqual(rgbaPx(p.frame, p.left + (kind === 'hat' ? 0 : 1), row), kind === 'hat' ? G.fed : G.text, who + ' band')
+        if (kind === 'hat') {
+          if (row - 1 >= 0) assert.deepEqual(rgbaPx(p.frame, p.left + 1, row - 1), G.gold, who + ' dome')
+          if (row - 2 >= 0 && p.right - p.left >= 6) assert.deepEqual(rgbaPx(p.frame, mid, row - 2), G.gold, who + ' crown')
+        } else if (row - 1 >= 0) {
+          assert.deepEqual(rgbaPx(p.frame, p.left + 1, row - 1), G.exp, who + ' cap')
+        }
+        // the head row itself is the pet's, not the prop's (a lift off the top clips the body before a seam nudge lowers it, so only at rest)
+        if (head >= 0 && mode.name === 'rest') assert.deepEqual(rgbaPx(p.frame, p.left, head), G.line, who + ' head')
+      }
+    }
+  }
+  __state({ hour: 12, idleHop: 0, bite: null })
+})
+
+test('food: the bite token draws over the hard hat on every bite frame', () => {
+  const p = pets.find((q) => q.top === 6 && q.left === 3 && q.right === 12)
+  const tokenAt = (tick) => {
+    const m = measure(Buffer.from(p.frame, 'base64'))
+    const sky = Math.max(0, m.top - 3)
+    return tick < 12 ? sky + Math.round(((m.mouth - 1 - sky) * tick) / 11) : m.mouth - 1
+  }
+  let overlaps = 0
+  for (let tick = 0; tick < 20; tick++) {
+    gagSetup({ frames: [p.frame] })
+    __state({ tick: 0, idleHop: 0 })
+    startGag({ kind: 'prop', prop: 'hat', held: 1 })
+    // a seam nudge lifts the body, and the food in its mouth with it
+    const nudge = liftOf(p.frame, p)
+    __state({ bite: { mode: 'wait', tick, xp: 1, kind: 'opus' } })
+    const m = measure(Buffer.from(p.frame, 'base64'))
+    const y = tokenAt(tick) - (tick >= 12 ? nudge : 0)
+    for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+      assert.deepEqual(rgbaPx(p.frame, m.tx + dx, y + dy), G.warn, `tick ${tick} token pixel ${dx},${dy}`)
+    }
+    // the hat is up there while the food is in front of it
+    if (y <= 5 && y + 1 >= 3 && m.tx + 1 >= p.left - 1) overlaps++
+  }
+  assert.ok(overlaps > 0, 'the token passes through the hat rows')
+  __state({ bite: null })
+})
