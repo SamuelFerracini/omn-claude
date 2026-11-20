@@ -1575,3 +1575,16 @@ test('food: the bite token draws over the hard hat on every bite frame', () => {
   assert.ok(overlaps > 0, 'the token passes through the hat rows')
   __state({ bite: null })
 })
+
+test('solid mode: uniform cell is a space with background, two-color cell is ▀ or ▄', () => {
+  const px = Array.from({ length: 16 * 18 }, () => [10, 20, 30]).flat()
+  const at = (x, y, c) => px.splice((y * 16 + x) * 3, 3, ...c)
+  at(3, 4, [200, 100, 50]) // cell (2,3): top differs from bottom
+  setRenderEnv({ override: 'solid', colorterm: '24bit' })
+  const cells = cellsOf(rasterOf(Buffer.from(Uint8Array.from(px)).toString('base64')))
+  setRenderEnv({})
+  assert.equal(cells.length, 16 * 9 * 3)
+  assert.deepEqual([cells[0], cells[1], cells[2]], [0x20, 0x01000000, (10 << 16) | (20 << 8) | 30])
+  const i = (2 * 16 + 3) * 3
+  assert.ok(cells[i] === 0x2580 || cells[i] === 0x2584)
+})
