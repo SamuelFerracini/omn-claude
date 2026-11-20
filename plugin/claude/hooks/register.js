@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.35'
+const VERSION = '0.4.36'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -1200,19 +1200,27 @@ function present(b64) {
   const buf = new Uint8Array(shown)
   if (pose && pose.lift) liftPet(buf, pose.lift)
   if (pose && pose.open && !hasChomp) dropMouth(buf, m, pose.lift)
-  if (pose && pose.token != null) paintToken(buf, m.tx, pose.token, crumbRgb[bite.kind] || crumbRgb.other)
   let lift = pose && pose.lift ? pose.lift : 0
+  // Whatever lifts the body after the bite pose moves the food's spot with it.
+  let tokenLift = 0
   if (liftNow()) {
     hop(buf)
     lift += 2
+    tokenLift += 2
   }
   // A one-pixel rise puts the crown on the seam between two cells, and most
   // idle animations bob the pet by one pixel. Every frame of a pet is set to
   // one height, chosen so the hard color change sits inside one cell.
   const key = hasChomp ? portrait.chomp : b64
   const steady = steadyLift(key, buf)
-  if (steady) liftPet(buf, steady)
+  if (steady) {
+    liftPet(buf, steady)
+    tokenLift += steady
+  }
   paintGags(buf, m, lift, key)
+  // Layers, bottom to top: pet, cosmetics, food. Food in the mouth rides with
+  // the body; food still falling or on the ground stays where the bite put it.
+  if (pose && pose.token != null) paintToken(buf, m.tx, pose.token - (pose.open || pose.lift ? tokenLift : 0), crumbRgb[bite.kind] || crumbRgb.other)
   paintBits(buf)
   paintSpark(buf)
   paintSleep(buf)
@@ -2095,7 +2103,7 @@ function paintGags(buf, m0, lift = 0, key = null) {
     const before = measure(buf)
     dx = gagBody(buf, { ...before, mouth: rest ? rest.mouth - lift : m0.mouth + (before.top - m0.top) }, g)
   }
-  const mask = petMask(buf, m0)
+  const mask = petMask(buf)
   const m = boundsOf(mask, measure(buf))
   // A squish moves the crown on purpose, so its frames are measured as drawn.
   const still = rest && !(g && !bite && g.kind === 'squish')
@@ -2109,19 +2117,11 @@ function paintGags(buf, m0, lift = 0, key = null) {
   if (g) gagOverlay(k, g)
 }
 
-// The pet's mask for placing overlays. A bite's food token is drawn in the
-// pet's columns before this runs; it is not the pet, so its pixels are left out.
-// A pet that stands over the ground's top row hides that row from groundOf,
-// so the row's ground pixels are left out too: they would widen the body on
-// some frames and move the hat to another row.
-function petMask(buf, m0) {
-  const mask = restMask(buf)
-  if (!bite) return mask
-  const c = crumbRgb[bite.kind] || crumbRgb.other
-  for (let y = 0; y < 18; y++) {
-    for (const x of [m0.tx, m0.tx + 1]) if (maskAt(mask, x, y) && samePx(buf, (y * 16 + x) * 3, c)) mask[y * 16 + x] = 0
-  }
-  return mask
+// The pet's mask for placing overlays. A pet that stands over the ground's top
+// row hides that row from groundOf, so the row's ground pixels are left out
+// too: they would widen the body on some frames and move the hat to another row.
+function petMask(buf) {
+  return restMask(buf)
 }
 
 function restMask(buf) {
@@ -2485,14 +2485,14 @@ function eyesOf(buf, m, mask) {
 
 function thinkDots(k, g) {
   const n = 1 + (Math.floor(g.t / 3) % 3)
-  const y = Math.max(0, k.top - 2)
+  const y = k.top - 2
   const x0 = Math.max(0, Math.min(11, k.head[1] - 1))
   for (let i = 0; i < n; i++) paint(k.buf, x0 + i * 2, y, pxText)
 }
 
 function hardHat(k) {
   const [a, b] = k.head
-  const brim = Math.max(2, k.head[2] - 1)
+  const brim = k.head[2] - 1
   for (let x = a - 1; x <= b + 1; x++) paint(k.buf, x, brim, pxFed)
   for (let x = a + 1; x <= b - 1; x++) paint(k.buf, x, brim - 1, pxGold)
   for (let x = a + 3; x <= b - 3; x++) paint(k.buf, x, brim - 2, pxGold)
@@ -2502,7 +2502,7 @@ function hardHat(k) {
 // A white-trimmed cap whose tip flops over to the right, pompom hanging down.
 function nightcap(k) {
   const [a, b] = k.head
-  const y = Math.max(3, k.head[2] - 1)
+  const y = k.head[2] - 1
   const mid = (a + b) >> 1
   for (let x = a; x <= b; x++) paint(k.buf, x, y, pxText)
   for (let x = a + 1; x <= b - 1; x++) paint(k.buf, x, y - 1, pxExp)
@@ -2641,7 +2641,7 @@ function palm(k) {
 // stack: two gold plus shapes and one white point.
 function stars(k, g) {
   const cx = (k.head[0] + k.head[1]) / 2
-  const cy = Math.max(1, k.head[2] - 2)
+  const cy = k.head[2] - 2
   const r = Math.min(5, Math.max(3, (k.head[1] - k.head[0]) / 2))
   for (let i = 0; i < 3; i++) {
     const a = g.t * 0.6 + (i * Math.PI * 2) / 3
@@ -2665,7 +2665,7 @@ function horror(k) {
     }
   }
   const x = Math.min(15, k.head[1] + 1)
-  const top = Math.max(3, k.top - 1)
+  const top = k.top - 1
   paint(k.buf, x, top - 3, pxWarn)
   paint(k.buf, x, top - 2, pxWarn)
   paint(k.buf, x, top, pxWarn)
