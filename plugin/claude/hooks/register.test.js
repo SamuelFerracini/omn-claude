@@ -364,15 +364,15 @@ test('render mode: halfblock unless Terminal.app or forced', () => {
   assert.equal(renderModeOf({}), 'halfblock')
   assert.equal(renderModeOf(undefined), 'halfblock')
   assert.equal(renderModeOf({ termProgram: 'iTerm.app' }), 'halfblock')
-  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'blocks')
-  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'blocks')
+  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'solid')
+  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'solid')
   assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.googlecode.iterm2' }), 'halfblock')
 })
 
 test('render mode: OMN_PET_RENDER wins both ways', () => {
   assert.equal(renderModeOf({ override: 'blocks' }), 'blocks')
   assert.equal(renderModeOf({ override: 'halfblock', termProgram: 'Apple_Terminal' }), 'halfblock')
-  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'blocks')
+  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'solid')
   assert.equal(renderModeOf({ override: 'compact' }), 'compact')
   assert.equal(renderModeOf({ override: 'image', termProgram: 'Apple_Terminal' }), 'image')
 })

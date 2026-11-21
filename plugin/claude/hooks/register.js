@@ -892,12 +892,12 @@ function unit(n, div, suffix) {
 }
 
 // OMN_PET_RENDER=image|compact|blocks|halfblock|solid forces the mode (SSH from a Mac forwards no TERM_PROGRAM).
-// Else Terminal.app gets blocks. tmux hides TERM_PROGRAM, so the bundle id counts too.
+// Else Terminal.app gets solid. tmux hides TERM_PROGRAM, so the bundle id counts too.
 export function renderModeOf(env) {
   const e = env || {}
   const forced = String(e.override || '').trim().toLowerCase()
   if (forced === 'blocks' || forced === 'compact' || forced === 'halfblock' || forced === 'solid' || forced === 'image') return forced
-  if (e.termProgram === 'Apple_Terminal' || e.bundleId === 'com.apple.Terminal') return 'blocks'
+  if (e.termProgram === 'Apple_Terminal' || e.bundleId === 'com.apple.Terminal') return 'solid'
   return 'halfblock'
 }
 
