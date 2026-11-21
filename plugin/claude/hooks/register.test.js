@@ -868,7 +868,7 @@ function gagSetup(over = {}) {
 function allHooks() {
   const out = {}
   register((event, matcher, fn) => {
-    const key = event + (typeof matcher === 'object' && matcher ? ':' + (matcher.command || matcher.component) : '')
+    const key = event + (typeof matcher === 'object' && matcher ? ':' + (matcher.command || matcher.component || matcher.door) : '')
     out[key] = typeof matcher === 'function' ? matcher : fn
   })
   return out
@@ -1116,6 +1116,81 @@ test('gag 6, compact squish: squashes to ~60% while compacting, then springs bac
   await h['session.compact']({}, { trigger: 'precompute', messages: [] }, async () => ({ messages: [] }))
   await h['session.compact']({}, { trigger: 'auto', agentId: 'a1', messages: [] }, async () => ({ messages: [] }))
   assert.equal(__state().gag, null)
+})
+
+const compactRow = (type, agentId) => ({ message: { type, name: type === 'system' ? 'compact_boundary' : undefined, content: [] }, door: 'compaction', origin: { kind: 'engine' }, uuid: 'r' + Math.random(), agentId })
+
+test('gag 6, compact squish fallback: the compaction rows squish once where session.compact is blocked', async () => {
+  gagSetup()
+  __state({ compactAt: [-Infinity, -Infinity] })
+  const h = allHooks()
+  const append = h['session.append:compaction']
+  const stored = { message: {}, uuid: 'x' }
+  // no session.compact hook ran (a policy plugin answered it): boundary then summary
+  assert.equal(await append({}, compactRow('system'), async () => stored), stored, 'the row passes through untouched')
+  const sq = __state().gag
+  assert.equal(sq.kind, 'squish')
+  assert.equal(sq.held, 0)
+  ticks(1)
+  await append({}, compactRow('user'), async () => stored)
+  assert.equal(__state().gag, sq, 'the summary row is the same compaction')
+  ticks(10)
+  assert.equal(__state().gag, null)
+  // a subagent's compaction rows do not squish
+  gagSetup()
+  ticks(60)
+  await append({}, compactRow('system', 'a1'), async () => stored)
+  await append({}, compactRow('user', 'a1'), async () => stored)
+  assert.equal(__state().gag, null)
+  // a later compaction, past the cooldown, squishes again
+  ticks(110)
+  await append({}, compactRow('system'), async () => stored)
+  assert.equal(__state().gag.kind, 'squish')
+})
+
+test('gag 6, compact squish: session.compact and the compaction rows together squish once', async () => {
+  gagSetup()
+  __state({ compactAt: [-Infinity, -Infinity] })
+  const h = allHooks()
+  const append = h['session.append:compaction']
+  const stored = { message: {}, uuid: 'x' }
+  ticks(200)
+  // a slow compaction: the rows land well past the 10s cooldown
+  const d = deferred()
+  const run = h['session.compact']({}, { trigger: 'auto', messages: [] }, () => d.p)
+  assert.equal(__state().gag.kind, 'squish')
+  ticks(300)
+  d.resolve({ messages: [] })
+  await run
+  await append({}, compactRow('system'), async () => stored)
+  await append({}, compactRow('user'), async () => stored)
+  ticks(10)
+  assert.equal(__state().gag, null, 'no second squish')
+  // rows that land before session.compact resolves are matched too
+  ticks(200)
+  const d2 = deferred()
+  const run2 = h['session.compact']({}, { trigger: 'manual', messages: [] }, () => d2.p)
+  ticks(150)
+  await append({}, compactRow('system'), async () => stored)
+  d2.resolve({ messages: [] })
+  await run2
+  ticks(10)
+  assert.equal(__state().gag, null, 'no second squish')
+  // a precompute marks nothing, so a later compaction's rows (its hook blocked) still squish
+  ticks(200)
+  await h['session.compact']({}, { trigger: 'precompute', messages: [] }, async () => ({ messages: [] }))
+  await h['session.compact']({}, { trigger: 'auto', agentId: 'a1', messages: [] }, async () => ({ messages: [] }))
+  assert.equal(__state().gag, null)
+  await append({}, compactRow('system'), async () => stored)
+  assert.equal(__state().gag.kind, 'squish')
+  ticks(20)
+  // a skipped or failed compaction leaves no mark behind
+  ticks(200)
+  await h['session.compact']({}, { trigger: 'manual', messages: [] }, async () => ({ skip: 'no' }))
+  await assert.rejects(h['session.compact']({}, { trigger: 'manual', messages: [] }, async () => { throw new Error('boom') }), /boom/)
+  ticks(200)
+  await append({}, compactRow('system'), async () => stored)
+  assert.equal(__state().gag.kind, 'squish')
 })
 
 test('gag 7, git moments: a commit throws confetti after it lands; a force push horrifies', async () => {

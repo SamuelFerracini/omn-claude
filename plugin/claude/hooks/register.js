@@ -274,12 +274,35 @@ export function register(on) {
   })
 
   on('session.compact', async ($, e, next) => {
-    const g = e.agentId === undefined && e.trigger !== 'precompute' ? startGag({ kind: 'squish', held: 1 }) : null
+    const main = e.agentId === undefined && e.trigger !== 'precompute'
+    // Marked even when the squish is dropped (cooldown, a scene): the
+    // compaction is this hook's, so the fallback below leaves it alone.
+    if (main) compactHookAt = tick
+    const g = main ? startGag({ kind: 'squish', held: 1 }) : null
+    let res
     try {
-      return await next(e)
+      res = await next(e)
+    } catch (err) {
+      if (main) compactHookAt = -Infinity
+      throw err
     } finally {
       releaseGag(g)
     }
+    // Skipped: nothing is compacted, so no compaction rows follow.
+    if (main && res && res.skip) compactHookAt = -Infinity
+    return res
+  })
+
+  // Fallback for setups where session.compact never reaches this plugin (an
+  // organization's policy plugin answers it first). Every compaction that
+  // stands appends its boundary and summary rows through session.append's
+  // compaction door, which no plugin can refuse and which reaches the
+  // person's plugins past a policy plugin. A precompute installs nothing, so
+  // it appends no rows. The row passes through unchanged.
+  on('session.append', { door: 'compaction' }, async ($, e, next) => {
+    const res = await next(e)
+    if (e.agentId === undefined) compactRow()
+    return res
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -543,6 +566,7 @@ export function __state(patch) {
     if ('idleHop' in patch) idleHop = patch.idleHop
     if ('quiet' in patch) quiet = patch.quiet
     if ('tick' in patch) tick = patch.tick
+    if ('compactAt' in patch) [compactHookAt, compactRowAt] = patch.compactAt
   }
   return {
     reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait, petId, arriveLeft, arriveFrom, arriveTo, arrivePhase: arriveLeft > 0 ? arrivePhase() : '', note, namePrompt,
@@ -1960,6 +1984,25 @@ function startGag(spec) {
 
 function releaseGag(g) {
   if (g && g.held > 0) g.held--
+}
+
+// The compaction rows of one compaction (boundary, summary) arrive back to
+// back: the first main row within compactRowGap of none squishes once, unless
+// session.compact already did for this compaction (within compactMatch).
+let compactHookAt = -Infinity
+let compactRowAt = -Infinity
+const compactRowGap = 50
+const compactMatch = 6000
+
+function compactRow() {
+  const fresh = tick - compactRowAt > compactRowGap
+  compactRowAt = tick
+  if (!fresh) return
+  if (tick - compactHookAt <= compactMatch) {
+    compactHookAt = -Infinity
+    return
+  }
+  startGag({ kind: 'squish' })
 }
 
 function clearGags() {
