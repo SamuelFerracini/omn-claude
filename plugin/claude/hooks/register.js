@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.42'
+const VERSION = '0.4.43'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -2330,6 +2330,8 @@ function paintGags(buf, m0, lift = 0, key = null) {
 // The pet's mask for placing overlays. A pet that stands over the ground's top
 // row hides that row from groundOf, so the row's ground pixels are left out
 // too: they would widen the body on some frames and move the hat to another row.
+// Loose pixels (a gleam sparkle, a speck beside the body) are left out as well:
+// they would raise the crown and widen the head row, and float the hat over it.
 function petMask(buf) {
   return restMask(buf)
 }
@@ -2340,13 +2342,53 @@ function restMask(buf) {
   if (ground && floor > 0 && floor < 18) {
     for (let x = 0; x < 16; x++) if (samePx(buf, ((floor - 1) * 16 + x) * 3, ground)) mask[(floor - 1) * 16 + x] = 0
   }
-  return mask
+  return mainPart(mask)
+}
+
+// The mask's largest 8-connected part, the body. Antennas, ears, flame tips and
+// feet touch it (a diagonal counts), so they stay; loose specks go.
+function mainPart(mask) {
+  const part = new Int16Array(mask.length).fill(-1)
+  const sizes = []
+  for (let s = 0; s < mask.length; s++) {
+    if (!mask[s] || part[s] >= 0) continue
+    const id = sizes.length
+    const queue = [s]
+    part[s] = id
+    let n = 0
+    while (queue.length) {
+      const at = queue.pop()
+      n++
+      const y = Math.floor(at / 16)
+      const x = at % 16
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const ny = y + dy
+          const nx = x + dx
+          if (ny < 0 || ny >= 18 || nx < 0 || nx >= 16) continue
+          const nid = ny * 16 + nx
+          if (!mask[nid] || part[nid] >= 0) continue
+          part[nid] = id
+          queue.push(nid)
+        }
+      }
+    }
+    sizes.push(n)
+  }
+  if (sizes.length < 2) return mask
+  const body = sizes.indexOf(Math.max(...sizes))
+  const out = new Uint8Array(mask.length)
+  for (let i = 0; i < mask.length; i++) if (part[i] === body) out[i] = 1
+  return out
 }
 
 // The pet's resting crown row, head span ([left, right, row]) and mouth row,
 // the most common answers across its frames as they are drawn (each at its
 // steady height, the chomp frame too). A flame that flickers wide, a blink
-// or a wave frame is outvoted.
+// or a wave frame is outvoted. Each of the crown row, head left, head right
+// and head row is voted on its own: a gleam sparkle that touches the head's
+// edge widens it on a few frames, each time in another place, and must not
+// split the vote.
 // null when key is not one of the pet's frames.
 const restCache = new WeakMap()
 function restOf(p, key) {
@@ -2359,7 +2401,8 @@ function restOf(p, key) {
     return buf
   }
   const alt = typeof p.chomp === 'string' && lifts.has(p.chomp) ? steadied(p.chomp) : null
-  const heads = new Map()
+  const heads = [new Map(), new Map(), new Map(), new Map()]
+  let seen = 0
   const mouths = new Map()
   const vote = (tally, v) => tally.set(v, (tally.get(v) || 0) + 1)
   for (const f of p.frames) {
@@ -2367,7 +2410,9 @@ function restOf(p, key) {
     const buf = steadied(f)
     const mask = restMask(buf)
     const m = boundsOf(mask, measure(buf))
-    vote(heads, [m.top, ...headSpan(m, mask)].join())
+    const span = [m.top, ...headSpan(m, mask)]
+    for (let i = 0; i < span.length; i++) vote(heads[i], span[i])
+    seen++
     vote(mouths, mouthAt(buf, alt, m.top, m.foot, floorAt(buf)))
   }
   const best = (tally) => {
@@ -2381,12 +2426,11 @@ function restOf(p, key) {
     }
     return out
   }
-  const head = best(heads)
-  if (head === null) {
+  if (!seen) {
     restCache.set(p, null)
     return null
   }
-  const [top, a, b, y] = head.split(',').map(Number)
+  const [top, a, b, y] = heads.map(best)
   const out = { top, head: [a, b, y], mouth: best(mouths) }
   restCache.set(p, out)
   return out
@@ -2634,14 +2678,22 @@ function rowSpan(mask, y) {
   return [a, b]
 }
 
-// Where a hat or cap sits: [left, right, row] of the first row from the top
-// that is at least half as wide as the body. An antenna, sprout, flame tip or
-// crown above it is narrower, so the hat goes on the head and they poke out.
+// Where a hat or cap sits: [left, right, row] of the first unbroken run of
+// pixels from the top that is at least half as wide as the body. An antenna,
+// sprout, flame tip, crown or a pair of ears above it is narrower (ears count
+// one at a time, not as the span between them), so the hat goes on the head
+// and they poke out.
 function headSpan(m, mask) {
   const need = Math.max(3, Math.ceil((m.maxX - m.minX + 1) / 2))
   for (let y = m.top; y <= m.foot; y++) {
-    const [a, b] = rowSpan(mask, y)
-    if (b - a + 1 >= need) return [a, b, y]
+    let best = null
+    for (let x = 0; x < 16; x++) {
+      if (!maskAt(mask, x, y) || maskAt(mask, x - 1, y)) continue
+      let b = x
+      while (maskAt(mask, b + 1, y)) b++
+      if (b - x + 1 >= need && (!best || b - x > best[1] - best[0])) best = [x, b]
+    }
+    if (best) return [best[0], best[1], y]
   }
   return [m.minX, m.maxX, m.top]
 }
