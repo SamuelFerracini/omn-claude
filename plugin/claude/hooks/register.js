@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.39'
+const VERSION = '0.4.40'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -1045,7 +1045,10 @@ export function rasterOf(b64, mode) {
     return bytesB64(new Uint8Array(Uint32Array.from(nums).buffer))
   }
   if (m === 'solid') {
-    // Two-color cell: the glyph whose background matches the vertical neighbor (▄ if top matches the cell above and bottom does not match the one below, else ▀).
+    // Uniform cell: a space with the color as background, so no glyph and no line.
+    // Two-color cell: ▀ (fg top, bg bottom) or ▄ (fg bottom, bg top). Pick the glyph whose
+    // background equals the nearest vertical neighbor's edge pixel, so the line blends in:
+    // ▀ when bottom matches the cell below, else ▄ when top matches the cell above, else ▀.
     const snap = truecolorOn() ? (c) => c : nearest256
     const at = (py, x) => (py < 0 || py > 17 ? -1 : rgb(raw, (py * cols + x) * 3))
     for (let y = 0; y < 9; y++) {
