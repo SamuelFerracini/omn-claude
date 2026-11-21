@@ -1861,6 +1861,14 @@ let frameTick = 0
 const gagPrio = { think: 1, prop: 2, confetti: 3, burp: 4, horror: 4, flinch: 5, facepalm: 6, squish: 6, dizzy: 7 }
 // Ticks (100ms) a gag plays once nothing holds it.
 const gagLen = { think: 0, prop: 10, confetti: 14, burp: 15, horror: 15, flinch: 8, facepalm: 15, squish: 10, dizzy: 20 }
+// Ticks (100ms) before a reaction gag of the same kind may start again, so a
+// run of failures or commits does not replay it back to back. The window
+// counts from when startGag took the gag (it played, merged or queued), not
+// from when it ended, so a long-held gag (a squish through a slow compaction)
+// does not stretch it. prop and think have none.
+const gagCooldown = { confetti: 100, burp: 100, horror: 100, flinch: 100, facepalm: 100, squish: 100, dizzy: 100 }
+// Kind -> the tick its cooldown started.
+const gagCool = new Map()
 // The gags that cover the head, so the nightcap steps aside.
 const headGags = new Set(['think', 'dizzy', 'horror', 'hat'])
 // Gags that are not worn, so an egg plays them too.
@@ -1928,6 +1936,8 @@ function startGag(spec) {
     if (kind !== 'facepalm') return null
     kind = 'flinch'
   }
+  if (gagCooldown[kind] && gagCool.has(kind) && tick - gagCool.get(kind) < gagCooldown[kind]) return null
+  if (gagCooldown[kind]) gagCool.set(kind, tick)
   // A gag draws on a body that is not hopping.
   idleHop = 0
   const g = { kind, prop: spec.prop || '', held: spec.held || 0, t: 0, left: gagLen[kind], prio: gagPrio[kind] }
@@ -1952,6 +1962,7 @@ function releaseGag(g) {
 function clearGags() {
   gag = null
   gagNext = null
+  gagCool.clear()
   thinking = null
   failRun = 0
   slowLeft = 0

@@ -1201,6 +1201,59 @@ test('gags: one at a time, higher priority replaces, lower waits then drops', ()
   assert.equal(__state().gagNext, null)
 })
 
+test('gags: a reaction kind cools down ~10s after it starts; other kinds still fire', () => {
+  for (const kind of ['confetti', 'burp', 'horror', 'flinch', 'facepalm', 'squish', 'dizzy']) {
+    gagSetup()
+    assert.ok(startGag({ kind }), kind)
+    ticks(30)
+    __state({ gag: null, gagNext: null })
+    assert.equal(startGag({ kind }), null, kind + ' cooling down')
+    ticks(69)
+    assert.equal(startGag({ kind }), null, kind + ' still cooling at 9.9s')
+    ticks(1)
+    assert.ok(startGag({ kind }), kind + ' again after 10s')
+  }
+  // another kind is not held back by one cooling down
+  gagSetup()
+  startGag({ kind: 'flinch' })
+  ticks(10)
+  assert.equal(startGag({ kind: 'flinch' }), null)
+  assert.equal(startGag({ kind: 'dizzy' }).kind, 'dizzy')
+  assert.equal(startGag({ kind: 'confetti' }).kind, 'confetti')
+  // props and thinking have no cooldown
+  gagSetup()
+  for (let i = 0; i < 3; i++) {
+    const p = startGag({ kind: 'prop', prop: 'hat', held: 1 })
+    assert.ok(p)
+    releaseGag(p)
+    ticks(40)
+    const th = startGag({ kind: 'think', held: 1 })
+    assert.ok(th)
+    releaseGag(th)
+    ticks(1)
+  }
+  // clearGags (a reset) ends every cooldown
+  gagSetup()
+  startGag({ kind: 'dizzy' })
+  assert.equal(startGag({ kind: 'dizzy' }), null)
+  gagSetup()
+  assert.ok(startGag({ kind: 'dizzy' }))
+})
+
+test('gags: a fail run flinches once, then facepalms, without replaying the flinch', async () => {
+  gagSetup()
+  const h = allHooks()
+  const fail = async () => ({ result: 'x', text: 'x', isError: true })
+  await h['tool.call']({}, { tool: 'Read' }, fail)
+  assert.equal(__state().gag.kind, 'flinch')
+  ticks(8)
+  assert.equal(__state().gag, null)
+  await h['tool.call']({}, { tool: 'Read' }, fail)
+  assert.equal(__state().gag.kind, 'prop', 'no second flinch within 10s, only the lingering lens')
+  await h['tool.call']({}, { tool: 'Read' }, fail)
+  assert.equal(__state().gag.kind, 'facepalm')
+})
+
 test('gags: wake, revive, arrive, evolve and gleam win; a bite keeps its pose', () => {
   for (const scene of [{ wakeLeft: 5 }, { reviveLeft: 5 }, { gleamLeft: 5 }, { evolveLeft: 5 }]) {
     gagSetup()
