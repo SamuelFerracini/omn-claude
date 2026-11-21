@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.40'
+const VERSION = '0.4.41'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -733,7 +733,7 @@ async function refresh($, growth) {
   $.ui.invalidate('ui.render')
 }
 
-const stageAt = [0, 500, 20000, 120000, 500000]
+const stageAt = [0, 1250, 50000, 300000, 750000]
 // Block heights in eighths, and the full height of each pip in the staircase.
 const pipLevels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 const pipHeights = [2, 4, 6, 8]
