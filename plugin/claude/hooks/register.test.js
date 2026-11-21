@@ -110,7 +110,7 @@ test('revive on a pet without gleam skips the gleam', () => {
 })
 
 test('gleam runs before a queued evolve', () => {
-  endRevive({ gleam: true, growth: 600, frames: [1] }, 0)
+  endRevive({ gleam: true, growth: 1300, frames: [1] }, 0)
   let st = __state()
   assert.equal(st.gleamLeft, 14)
   assert.equal(st.evolveLeft, 0)
@@ -121,12 +121,12 @@ test('gleam runs before a queued evolve', () => {
 })
 
 test('a non-gleam revive still evolves right away', () => {
-  endRevive({ gleam: false, growth: 600, frames: [1] }, 0)
+  endRevive({ gleam: false, growth: 1300, frames: [1] }, 0)
   assert.equal(__state().evolveLeft, 50)
 })
 
 test('wake cancels the gleam and its queued evolve', () => {
-  endRevive({ gleam: true, growth: 600, frames: [1] }, 0)
+  endRevive({ gleam: true, growth: 1300, frames: [1] }, 0)
   beginWake()
   const st = __state()
   assert.equal(st.gleamLeft, 0)
@@ -321,7 +321,7 @@ test('the id in the open reply replaces a stale stored id', async () => {
 })
 
 test('letgo with the same id still runs the arrive scene, then asks a nick', async () => {
-  const old = { frames: [[5]], growth: 600, name: 'Old' }
+  const old = { frames: [[5]], growth: 1300, name: 'Old' }
   freshPet({ petId: 'ab3xy7qz', portrait: old })
   const newEgg = { frames: [[0]], growth: 0, name: 'Bean' }
   const { $, calls, data } = server({
@@ -488,10 +488,10 @@ test('exp pips: fixed staircase, state per pip', () => {
 
 test('exp quarter boundaries hold on real exp values', () => {
   const S = (g) => pipStates(expPct(g)).map((s) => s[0]).join('')
-  assert.equal(S(25000 + 20000), 'dcoo')
-  assert.equal(S(70000), 'ddco')
-  assert.equal(S(95000), 'dddc')
-  assert.equal(S(500 + 4875), 'dcoo')
+  assert.equal(S(50000 + 62500), 'dcoo')
+  assert.equal(S(175000), 'ddco')
+  assert.equal(S(237500), 'dddc')
+  assert.equal(S(1250 + 12188), 'dcoo')
 })
 
 test('exp pip row: glyphs always full stairs, colors by state', () => {
