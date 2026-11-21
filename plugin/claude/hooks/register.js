@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.38'
+const VERSION = '0.4.39'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -274,12 +274,35 @@ export function register(on) {
   })
 
   on('session.compact', async ($, e, next) => {
-    const g = e.agentId === undefined && e.trigger !== 'precompute' ? startGag({ kind: 'squish', held: 1 }) : null
+    const main = e.agentId === undefined && e.trigger !== 'precompute'
+    // Marked even when the squish is dropped (cooldown, a scene): the
+    // compaction is this hook's, so the fallback below leaves it alone.
+    if (main) compactHookAt = tick
+    const g = main ? startGag({ kind: 'squish', held: 1 }) : null
+    let res
     try {
-      return await next(e)
+      res = await next(e)
+    } catch (err) {
+      if (main) compactHookAt = -Infinity
+      throw err
     } finally {
       releaseGag(g)
     }
+    // Skipped: nothing is compacted, so no compaction rows follow.
+    if (main && res && res.skip) compactHookAt = -Infinity
+    return res
+  })
+
+  // Fallback for setups where session.compact never reaches this plugin (an
+  // organization's policy plugin answers it first). Every compaction that
+  // stands appends its boundary and summary rows through session.append's
+  // compaction door, which no plugin can refuse and which reaches the
+  // person's plugins past a policy plugin. A precompute installs nothing, so
+  // it appends no rows. The row passes through unchanged.
+  on('session.append', { door: 'compaction' }, async ($, e, next) => {
+    const res = await next(e)
+    if (e.agentId === undefined) compactRow()
+    return res
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -543,6 +566,7 @@ export function __state(patch) {
     if ('idleHop' in patch) idleHop = patch.idleHop
     if ('quiet' in patch) quiet = patch.quiet
     if ('tick' in patch) tick = patch.tick
+    if ('compactAt' in patch) [compactHookAt, compactRowAt] = patch.compactAt
   }
   return {
     reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait, petId, arriveLeft, arriveFrom, arriveTo, arrivePhase: arriveLeft > 0 ? arrivePhase() : '', note, namePrompt,
@@ -1875,7 +1899,15 @@ let slowLeft = 0
 let frameTick = 0
 const gagPrio = { think: 1, prop: 2, confetti: 3, burp: 4, horror: 4, flinch: 5, facepalm: 6, squish: 6, dizzy: 7 }
 // Ticks (100ms) a gag plays once nothing holds it.
-const gagLen = { think: 0, prop: 10, confetti: 14, burp: 15, horror: 15, flinch: 8, facepalm: 15, squish: 10, dizzy: 20 }
+const gagLen = { think: 0, prop: 30, confetti: 14, burp: 15, horror: 15, flinch: 8, facepalm: 15, squish: 10, dizzy: 20 }
+// Ticks (100ms) before a reaction gag of the same kind may start again, so a
+// run of failures or commits does not replay it back to back. The window
+// counts from when startGag took the gag (it played, merged or queued), not
+// from when it ended, so a long-held gag (a squish through a slow compaction)
+// does not stretch it. prop and think have none.
+const gagCooldown = { confetti: 100, burp: 100, horror: 100, flinch: 100, facepalm: 100, squish: 100, dizzy: 100 }
+// Kind -> the tick its cooldown started.
+const gagCool = new Map()
 // The gags that cover the head, so the nightcap steps aside.
 const headGags = new Set(['think', 'dizzy', 'horror', 'hat'])
 // Gags that are not worn, so an egg plays them too.
@@ -1943,11 +1975,16 @@ function startGag(spec) {
     if (kind !== 'facepalm') return null
     kind = 'flinch'
   }
+  if (gagCooldown[kind] && gagCool.has(kind) && tick - gagCool.get(kind) < gagCooldown[kind]) return null
+  if (gagCooldown[kind]) gagCool.set(kind, tick)
   // A gag draws on a body that is not hopping.
   idleHop = 0
   const g = { kind, prop: spec.prop || '', held: spec.held || 0, t: 0, left: gagLen[kind], prio: gagPrio[kind] }
   if (kind === 'confetti') spawnConfetti(g)
-  if (!gag || g.prio > gag.prio) {
+  // A prop that only lingers (its tool is done) yields to any new gag that is
+  // not the same prop: the next tool's prop, thinking dots, a reaction.
+  const lingering = !!gag && gag.kind === 'prop' && gag.held === 0
+  if (!gag || g.prio > gag.prio || (lingering && !(g.kind === gag.kind && g.prop === gag.prop))) {
     gag = g
     return g
   }
@@ -1964,9 +2001,29 @@ function releaseGag(g) {
   if (g && g.held > 0) g.held--
 }
 
+// The compaction rows of one compaction (boundary, summary) arrive back to
+// back: the first main row within compactRowGap of none squishes once, unless
+// session.compact already did for this compaction (within compactMatch).
+let compactHookAt = -Infinity
+let compactRowAt = -Infinity
+const compactRowGap = 50
+const compactMatch = 6000
+
+function compactRow() {
+  const fresh = tick - compactRowAt > compactRowGap
+  compactRowAt = tick
+  if (!fresh) return
+  if (tick - compactHookAt <= compactMatch) {
+    compactHookAt = -Infinity
+    return
+  }
+  startGag({ kind: 'squish' })
+}
+
 function clearGags() {
   gag = null
   gagNext = null
+  gagCool.clear()
   thinking = null
   failRun = 0
   slowLeft = 0
@@ -1987,6 +2044,13 @@ function stepGag() {
   if (gag.bits) stepConfetti(gag)
   if (gag.held > 0 && gag.t < (gag.kind === 'think' ? thinkCap : holdCap)) return
   gag.held = 0
+  // A lingering prop gives way at once to a queued gag, which would otherwise
+  // wait past gagWait and be dropped.
+  if (gag.kind === 'prop' && gagNext) {
+    gag = null
+    promoteGag()
+    return
+  }
   gag.left--
   if (gag.left > 0) return
   if (gag.kind === 'burp') slowLeft = slowTicks

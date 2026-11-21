@@ -868,7 +868,7 @@ function gagSetup(over = {}) {
 function allHooks() {
   const out = {}
   register((event, matcher, fn) => {
-    const key = event + (typeof matcher === 'object' && matcher ? ':' + (matcher.command || matcher.component) : '')
+    const key = event + (typeof matcher === 'object' && matcher ? ':' + (matcher.command || matcher.component || matcher.door) : '')
     out[key] = typeof matcher === 'function' ? matcher : fn
   })
   return out
@@ -921,7 +921,7 @@ test('gag 1, thinking: dots blink above the head from turn.start until the first
   assert.deepEqual(pxAt(11, 4), G.bg)
 })
 
-test('gag 2, tool props: each tool shows its prop while it runs and ~1s after', async () => {
+test('gag 2, tool props: each tool shows its prop while it runs and ~3s after', async () => {
   const h = allHooks()
   const cases = [
     ['Bash', 'hat', () => assert.deepEqual(pxAt(2, 5), G.fed)],
@@ -950,8 +950,8 @@ test('gag 2, tool props: each tool shows its prop while it runs and ~1s after', 
     d.resolve(answer)
     assert.equal(await run, answer, 'the tool answer passes through untouched')
     assert.equal(__state().gag.held, 0)
-    ticks(9)
-    assert.equal(__state().gag.prop, prop)
+    ticks(29)
+    assert.equal(__state().gag.prop, prop, 'lingers ~3s')
     ticks(1)
     assert.equal(__state().gag, null, tool)
   }
@@ -968,7 +968,7 @@ test('gag 2, clone: pops out (puff), stands small in front when there is no room
   assert.deepEqual([pxAt(11, 12), pxAt(13, 10)], [G.bg, G.bg], 'rim')
   assert.deepEqual(pxAt(5, 9), G.eye, 'the rest of the pet is untouched')
   releaseGag(g)
-  ticks(7)
+  ticks(27)
   assert.deepEqual(pxAt(14, 13), [0xc8, 0xc4, 0xd4], 'poof at the end')
 })
 
@@ -1118,6 +1118,81 @@ test('gag 6, compact squish: squashes to ~60% while compacting, then springs bac
   assert.equal(__state().gag, null)
 })
 
+const compactRow = (type, agentId) => ({ message: { type, name: type === 'system' ? 'compact_boundary' : undefined, content: [] }, door: 'compaction', origin: { kind: 'engine' }, uuid: 'r' + Math.random(), agentId })
+
+test('gag 6, compact squish fallback: the compaction rows squish once where session.compact is blocked', async () => {
+  gagSetup()
+  __state({ compactAt: [-Infinity, -Infinity] })
+  const h = allHooks()
+  const append = h['session.append:compaction']
+  const stored = { message: {}, uuid: 'x' }
+  // no session.compact hook ran (a policy plugin answered it): boundary then summary
+  assert.equal(await append({}, compactRow('system'), async () => stored), stored, 'the row passes through untouched')
+  const sq = __state().gag
+  assert.equal(sq.kind, 'squish')
+  assert.equal(sq.held, 0)
+  ticks(1)
+  await append({}, compactRow('user'), async () => stored)
+  assert.equal(__state().gag, sq, 'the summary row is the same compaction')
+  ticks(10)
+  assert.equal(__state().gag, null)
+  // a subagent's compaction rows do not squish
+  gagSetup()
+  ticks(60)
+  await append({}, compactRow('system', 'a1'), async () => stored)
+  await append({}, compactRow('user', 'a1'), async () => stored)
+  assert.equal(__state().gag, null)
+  // a later compaction, past the cooldown, squishes again
+  ticks(110)
+  await append({}, compactRow('system'), async () => stored)
+  assert.equal(__state().gag.kind, 'squish')
+})
+
+test('gag 6, compact squish: session.compact and the compaction rows together squish once', async () => {
+  gagSetup()
+  __state({ compactAt: [-Infinity, -Infinity] })
+  const h = allHooks()
+  const append = h['session.append:compaction']
+  const stored = { message: {}, uuid: 'x' }
+  ticks(200)
+  // a slow compaction: the rows land well past the 10s cooldown
+  const d = deferred()
+  const run = h['session.compact']({}, { trigger: 'auto', messages: [] }, () => d.p)
+  assert.equal(__state().gag.kind, 'squish')
+  ticks(300)
+  d.resolve({ messages: [] })
+  await run
+  await append({}, compactRow('system'), async () => stored)
+  await append({}, compactRow('user'), async () => stored)
+  ticks(10)
+  assert.equal(__state().gag, null, 'no second squish')
+  // rows that land before session.compact resolves are matched too
+  ticks(200)
+  const d2 = deferred()
+  const run2 = h['session.compact']({}, { trigger: 'manual', messages: [] }, () => d2.p)
+  ticks(150)
+  await append({}, compactRow('system'), async () => stored)
+  d2.resolve({ messages: [] })
+  await run2
+  ticks(10)
+  assert.equal(__state().gag, null, 'no second squish')
+  // a precompute marks nothing, so a later compaction's rows (its hook blocked) still squish
+  ticks(200)
+  await h['session.compact']({}, { trigger: 'precompute', messages: [] }, async () => ({ messages: [] }))
+  await h['session.compact']({}, { trigger: 'auto', agentId: 'a1', messages: [] }, async () => ({ messages: [] }))
+  assert.equal(__state().gag, null)
+  await append({}, compactRow('system'), async () => stored)
+  assert.equal(__state().gag.kind, 'squish')
+  ticks(20)
+  // a skipped or failed compaction leaves no mark behind
+  ticks(200)
+  await h['session.compact']({}, { trigger: 'manual', messages: [] }, async () => ({ skip: 'no' }))
+  await assert.rejects(h['session.compact']({}, { trigger: 'manual', messages: [] }, async () => { throw new Error('boom') }), /boom/)
+  ticks(200)
+  await append({}, compactRow('system'), async () => stored)
+  assert.equal(__state().gag.kind, 'squish')
+})
+
 test('gag 7, git moments: a commit throws confetti after it lands; a force push horrifies', async () => {
   assert.equal(gitCommit('git add -A && git commit -m "x"'), true)
   assert.equal(gitCommit('git -C repo commit --amend'), true)
@@ -1199,6 +1274,98 @@ test('gags: one at a time, higher priority replaces, lower waits then drops', ()
   assert.equal(a, b)
   assert.equal(a.held, 2)
   assert.equal(__state().gagNext, null)
+})
+
+test('gags: a lingering prop gives way to the next tool, a waiting gag and thinking', async () => {
+  gagSetup()
+  const h = allHooks()
+  await h['tool.call']({}, { tool: 'Bash', command: 'ls' }, async () => ({ result: {}, text: '' }))
+  assert.equal(__state().gag.prop, 'hat')
+  ticks(5)
+  // the next tool's prop takes over at once
+  const d = deferred()
+  const run = h['tool.call']({}, { tool: 'Read', file_path: '/x' }, () => d.p)
+  assert.equal(__state().gag.prop, 'lens')
+  assert.equal(__state().gag.held, 1)
+  d.resolve({ result: {}, text: '' })
+  await run
+  // the same prop again holds the lingering one, it does not restart it
+  const lens = __state().gag
+  ticks(5)
+  const again = startGag({ kind: 'prop', prop: 'lens', held: 1 })
+  assert.equal(again, lens)
+  assert.equal(again.held, 1)
+  releaseGag(again)
+  // thinking dots replace a lingering prop
+  startGag({ kind: 'think', held: 1 })
+  assert.equal(__state().gag.kind, 'think')
+  // a gag queued behind a held prop plays as soon as the prop is released,
+  // not dropped while the prop lingers
+  gagSetup()
+  const hat = startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  startGag({ kind: 'prop', prop: 'pencil', held: 0 })
+  assert.equal(__state().gagNext.prop, 'pencil')
+  releaseGag(hat)
+  ticks(1)
+  assert.equal(__state().gag.prop, 'pencil')
+  // a higher priority gag still replaces a held prop
+  gagSetup()
+  startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  assert.equal(startGag({ kind: 'flinch' }).kind, 'flinch')
+  assert.equal(__state().gag.kind, 'flinch')
+})
+
+test('gags: a reaction kind cools down ~10s after it starts; other kinds still fire', () => {
+  for (const kind of ['confetti', 'burp', 'horror', 'flinch', 'facepalm', 'squish', 'dizzy']) {
+    gagSetup()
+    assert.ok(startGag({ kind }), kind)
+    ticks(30)
+    __state({ gag: null, gagNext: null })
+    assert.equal(startGag({ kind }), null, kind + ' cooling down')
+    ticks(69)
+    assert.equal(startGag({ kind }), null, kind + ' still cooling at 9.9s')
+    ticks(1)
+    assert.ok(startGag({ kind }), kind + ' again after 10s')
+  }
+  // another kind is not held back by one cooling down
+  gagSetup()
+  startGag({ kind: 'flinch' })
+  ticks(10)
+  assert.equal(startGag({ kind: 'flinch' }), null)
+  assert.equal(startGag({ kind: 'dizzy' }).kind, 'dizzy')
+  assert.equal(startGag({ kind: 'confetti' }).kind, 'confetti')
+  // props and thinking have no cooldown
+  gagSetup()
+  for (let i = 0; i < 3; i++) {
+    const p = startGag({ kind: 'prop', prop: 'hat', held: 1 })
+    assert.ok(p)
+    releaseGag(p)
+    ticks(40)
+    const th = startGag({ kind: 'think', held: 1 })
+    assert.ok(th)
+    releaseGag(th)
+    ticks(1)
+  }
+  // clearGags (a reset) ends every cooldown
+  gagSetup()
+  startGag({ kind: 'dizzy' })
+  assert.equal(startGag({ kind: 'dizzy' }), null)
+  gagSetup()
+  assert.ok(startGag({ kind: 'dizzy' }))
+})
+
+test('gags: a fail run flinches once, then facepalms, without replaying the flinch', async () => {
+  gagSetup()
+  const h = allHooks()
+  const fail = async () => ({ result: 'x', text: 'x', isError: true })
+  await h['tool.call']({}, { tool: 'Read' }, fail)
+  assert.equal(__state().gag.kind, 'flinch')
+  ticks(8)
+  assert.equal(__state().gag, null)
+  await h['tool.call']({}, { tool: 'Read' }, fail)
+  assert.equal(__state().gag.kind, 'prop', 'no second flinch within 10s, only the lingering lens')
+  await h['tool.call']({}, { tool: 'Read' }, fail)
+  assert.equal(__state().gag.kind, 'facepalm')
 })
 
 test('gags: wake, revive, arrive, evolve and gleam win; a bite keeps its pose', () => {
