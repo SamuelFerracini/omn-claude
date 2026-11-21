@@ -1860,7 +1860,7 @@ let slowLeft = 0
 let frameTick = 0
 const gagPrio = { think: 1, prop: 2, confetti: 3, burp: 4, horror: 4, flinch: 5, facepalm: 6, squish: 6, dizzy: 7 }
 // Ticks (100ms) a gag plays once nothing holds it.
-const gagLen = { think: 0, prop: 10, confetti: 14, burp: 15, horror: 15, flinch: 8, facepalm: 15, squish: 10, dizzy: 20 }
+const gagLen = { think: 0, prop: 30, confetti: 14, burp: 15, horror: 15, flinch: 8, facepalm: 15, squish: 10, dizzy: 20 }
 // Ticks (100ms) before a reaction gag of the same kind may start again, so a
 // run of failures or commits does not replay it back to back. The window
 // counts from when startGag took the gag (it played, merged or queued), not
@@ -1942,7 +1942,10 @@ function startGag(spec) {
   idleHop = 0
   const g = { kind, prop: spec.prop || '', held: spec.held || 0, t: 0, left: gagLen[kind], prio: gagPrio[kind] }
   if (kind === 'confetti') spawnConfetti(g)
-  if (!gag || g.prio > gag.prio) {
+  // A prop that only lingers (its tool is done) yields to any new gag that is
+  // not the same prop: the next tool's prop, thinking dots, a reaction.
+  const lingering = !!gag && gag.kind === 'prop' && gag.held === 0
+  if (!gag || g.prio > gag.prio || (lingering && !(g.kind === gag.kind && g.prop === gag.prop))) {
     gag = g
     return g
   }
@@ -1983,6 +1986,13 @@ function stepGag() {
   if (gag.bits) stepConfetti(gag)
   if (gag.held > 0 && gag.t < (gag.kind === 'think' ? thinkCap : holdCap)) return
   gag.held = 0
+  // A lingering prop gives way at once to a queued gag, which would otherwise
+  // wait past gagWait and be dropped.
+  if (gag.kind === 'prop' && gagNext) {
+    gag = null
+    promoteGag()
+    return
+  }
   gag.left--
   if (gag.left > 0) return
   if (gag.kind === 'burp') slowLeft = slowTicks

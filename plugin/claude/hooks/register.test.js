@@ -921,7 +921,7 @@ test('gag 1, thinking: dots blink above the head from turn.start until the first
   assert.deepEqual(pxAt(11, 4), G.bg)
 })
 
-test('gag 2, tool props: each tool shows its prop while it runs and ~1s after', async () => {
+test('gag 2, tool props: each tool shows its prop while it runs and ~3s after', async () => {
   const h = allHooks()
   const cases = [
     ['Bash', 'hat', () => assert.deepEqual(pxAt(2, 5), G.fed)],
@@ -950,8 +950,8 @@ test('gag 2, tool props: each tool shows its prop while it runs and ~1s after', 
     d.resolve(answer)
     assert.equal(await run, answer, 'the tool answer passes through untouched')
     assert.equal(__state().gag.held, 0)
-    ticks(9)
-    assert.equal(__state().gag.prop, prop)
+    ticks(29)
+    assert.equal(__state().gag.prop, prop, 'lingers ~3s')
     ticks(1)
     assert.equal(__state().gag, null, tool)
   }
@@ -968,7 +968,7 @@ test('gag 2, clone: pops out (puff), stands small in front when there is no room
   assert.deepEqual([pxAt(11, 12), pxAt(13, 10)], [G.bg, G.bg], 'rim')
   assert.deepEqual(pxAt(5, 9), G.eye, 'the rest of the pet is untouched')
   releaseGag(g)
-  ticks(7)
+  ticks(27)
   assert.deepEqual(pxAt(14, 13), [0xc8, 0xc4, 0xd4], 'poof at the end')
 })
 
@@ -1199,6 +1199,45 @@ test('gags: one at a time, higher priority replaces, lower waits then drops', ()
   assert.equal(a, b)
   assert.equal(a.held, 2)
   assert.equal(__state().gagNext, null)
+})
+
+test('gags: a lingering prop gives way to the next tool, a waiting gag and thinking', async () => {
+  gagSetup()
+  const h = allHooks()
+  await h['tool.call']({}, { tool: 'Bash', command: 'ls' }, async () => ({ result: {}, text: '' }))
+  assert.equal(__state().gag.prop, 'hat')
+  ticks(5)
+  // the next tool's prop takes over at once
+  const d = deferred()
+  const run = h['tool.call']({}, { tool: 'Read', file_path: '/x' }, () => d.p)
+  assert.equal(__state().gag.prop, 'lens')
+  assert.equal(__state().gag.held, 1)
+  d.resolve({ result: {}, text: '' })
+  await run
+  // the same prop again holds the lingering one, it does not restart it
+  const lens = __state().gag
+  ticks(5)
+  const again = startGag({ kind: 'prop', prop: 'lens', held: 1 })
+  assert.equal(again, lens)
+  assert.equal(again.held, 1)
+  releaseGag(again)
+  // thinking dots replace a lingering prop
+  startGag({ kind: 'think', held: 1 })
+  assert.equal(__state().gag.kind, 'think')
+  // a gag queued behind a held prop plays as soon as the prop is released,
+  // not dropped while the prop lingers
+  gagSetup()
+  const hat = startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  startGag({ kind: 'prop', prop: 'pencil', held: 0 })
+  assert.equal(__state().gagNext.prop, 'pencil')
+  releaseGag(hat)
+  ticks(1)
+  assert.equal(__state().gag.prop, 'pencil')
+  // a higher priority gag still replaces a held prop
+  gagSetup()
+  startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  assert.equal(startGag({ kind: 'flinch' }).kind, 'flinch')
+  assert.equal(__state().gag.kind, 'flinch')
 })
 
 test('gags: a reaction kind cools down ~10s after it starts; other kinds still fire', () => {
