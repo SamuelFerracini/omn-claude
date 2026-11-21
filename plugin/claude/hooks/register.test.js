@@ -2006,6 +2006,42 @@ test('head props: hard hat and nightcap keep their gap to the head on every fram
   __state({ hour: 11, idleHop: 0, bite: null })
 })
 
+// A shapePet with loose specks above the head, far apart (a gleam sparkle near
+// each top corner) or with two ears on the head's corners.
+function speckPet(top, extra) {
+  const b = Buffer.from(shapePet(top), 'base64')
+  for (const [x, y, c] of extra) b.set(c, (y * 16 + x) * 3)
+  return b.toString('base64')
+}
+
+test('head props: loose specks and ears above the head do not lift the hat or cap', () => {
+  const white = [255, 255, 255]
+  const cases = [
+    // two loose specks 2 rows over the head, 12 pixels apart: wider than half the body
+    { name: 'specks', frame: speckPet(6, [[1, 4, white], [13, 4, white], [14, 4, white]]) },
+    // one-pixel ears on the head's corners: a row 10 pixels wide, but not one run
+    { name: 'ears', frame: speckPet(6, [[3, 5, G.line], [12, 5, G.line]]) },
+  ]
+  for (const { name, frame } of cases) {
+    for (const kind of ['hat', 'nightcap']) {
+      gagSetup({ frames: [frame] })
+      __state({ tick: 0, idleHop: 0, hour: kind === 'nightcap' ? 2 : 12 })
+      if (kind === 'hat') startGag({ kind: 'prop', prop: 'hat', held: 1 })
+      // the head is row 6 (x 3..12) less the seam nudge: the brim or band sits right on it
+      const head = 6 - liftOf(frame, { top: 6, left: 3 })
+      const who = `${name} ${kind} head ${head}`
+      if (kind === 'hat') {
+        assert.deepEqual(rgbaPx(frame, 4, head - 1), G.fed, who + ' brim')
+        assert.deepEqual(rgbaPx(frame, 7, head - 2), G.gold, who + ' dome')
+      } else {
+        assert.deepEqual(rgbaPx(frame, 4, head - 1), G.text, who + ' band')
+      }
+      assert.deepEqual(rgbaPx(frame, 3, head), G.line, who + ' head row is the pet')
+    }
+  }
+  __state({ hour: 11, idleHop: 0 })
+})
+
 test('food: the bite token draws over the hard hat on every bite frame', () => {
   const p = pets.find((q) => q.top === 6 && q.left === 3 && q.right === 12)
   const tokenAt = (tick) => {

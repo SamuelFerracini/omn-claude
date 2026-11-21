@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.42'
+const VERSION = '0.4.44'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -1613,10 +1613,12 @@ function steadyOf(p) {
   }
   if (!raws.length) return out
   const ref = raws[0][1]
+  // A gleam sparkle stays put while the body bobs: it is no clue to the height.
+  const skip = new Set(sparkSpots(p).map((s) => s.id))
   // Each height, in rows below the first frame: its frames, seam scores and top.
   const heights = new Map()
   const downs = raws.map(([, raw]) => {
-    const d = bobOf(ref, raw)
+    const d = bobOf(ref, raw, skip)
     const h = heights.get(d) || { d, n: 0, split: 0, joined: 0, top: 18 }
     const s = seamScore(raw)
     h.n++
@@ -1639,7 +1641,7 @@ function steadyOf(p) {
   if (typeof p.chomp === 'string' && !out.has(p.chomp)) {
     try {
       const raw = decodeB64(p.chomp)
-      if (raw.length >= 16 * 18 * 3) out.set(p.chomp, bobOf(ref, raw) - target)
+      if (raw.length >= 16 * 18 * 3) out.set(p.chomp, bobOf(ref, raw, skip) - target)
     } catch (err) {}
   }
   return out
@@ -1647,7 +1649,8 @@ function steadyOf(p) {
 
 // How many rows lower raw stands than ref (negative: higher), up to 2, by
 // the closest match above the ground line. Ties go to the smaller move.
-function bobOf(ref, raw) {
+// Pixels in skip (indexes) are left out on both sides.
+function bobOf(ref, raw, skip = null) {
   const floor = floorAt(ref)
   let best = 0
   let cost = Infinity
@@ -1661,6 +1664,7 @@ function bobOf(ref, raw) {
           c += 64
           continue
         }
+        if (skip && (skip.has(y * 16 + x) || skip.has(sy * 16 + x))) continue
         const j = (sy * 16 + x) * 3
         c += Math.abs(ref[j] - raw[i]) + Math.abs(ref[j + 1] - raw[i + 1]) + Math.abs(ref[j + 2] - raw[i + 2])
       }
@@ -2330,6 +2334,8 @@ function paintGags(buf, m0, lift = 0, key = null) {
 // The pet's mask for placing overlays. A pet that stands over the ground's top
 // row hides that row from groundOf, so the row's ground pixels are left out
 // too: they would widen the body on some frames and move the hat to another row.
+// Loose pixels (a gleam sparkle, a speck beside the body) are left out as well:
+// they would raise the crown and widen the head row, and float the hat over it.
 function petMask(buf) {
   return restMask(buf)
 }
@@ -2340,26 +2346,139 @@ function restMask(buf) {
   if (ground && floor > 0 && floor < 18) {
     for (let x = 0; x < 16; x++) if (samePx(buf, ((floor - 1) * 16 + x) * 3, ground)) mask[(floor - 1) * 16 + x] = 0
   }
-  return mask
+  return mainPart(mask)
+}
+
+// The mask's largest 8-connected part, the body. Antennas, ears, flame tips and
+// feet touch it (a diagonal counts), so they stay; loose specks go.
+function mainPart(mask) {
+  const part = new Int16Array(mask.length).fill(-1)
+  const sizes = []
+  for (let s = 0; s < mask.length; s++) {
+    if (!mask[s] || part[s] >= 0) continue
+    const id = sizes.length
+    const queue = [s]
+    part[s] = id
+    let n = 0
+    while (queue.length) {
+      const at = queue.pop()
+      n++
+      const y = Math.floor(at / 16)
+      const x = at % 16
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const ny = y + dy
+          const nx = x + dx
+          if (ny < 0 || ny >= 18 || nx < 0 || nx >= 16) continue
+          const nid = ny * 16 + nx
+          if (!mask[nid] || part[nid] >= 0) continue
+          part[nid] = id
+          queue.push(nid)
+        }
+      }
+    }
+    sizes.push(n)
+  }
+  if (sizes.length < 2) return mask
+  const body = sizes.indexOf(Math.max(...sizes))
+  const out = new Uint8Array(mask.length)
+  for (let i = 0; i < mask.length; i++) if (part[i] === body) out[i] = 1
+  return out
+}
+
+// A gleam pet's sparkles. omn.sh draws up to 10 at fixed spots, white or cFed,
+// each shown on two of every three frames ((frame + phase) % 3 != 2), over the
+// body too. So a spot is a pixel that has one sparkle color on every frame of
+// exactly two of the three frame classes; the third class (off) shows what is
+// under it. Each spot: { id (pixel index), c (its color), off }. Empty for a
+// pet without gleam.
+const sparkCache = new WeakMap()
+function sparkSpots(p) {
+  if (!p || p.gleam !== true || !Array.isArray(p.frames)) return []
+  if (sparkCache.has(p)) return sparkCache.get(p)
+  const out = []
+  sparkCache.set(p, out)
+  const bufs = []
+  for (const f of p.frames) {
+    try {
+      const raw = decodeB64(f)
+      if (raw.length < 16 * 18 * 3) return out
+      bufs.push(raw)
+    } catch (err) {
+      return out
+    }
+  }
+  for (let id = 0; id < 16 * 18; id++) {
+    for (const c of [pxWhite, pxFed]) {
+      const lit = [true, true, true]
+      for (let i = 0; i < bufs.length; i++) if (!samePx(bufs[i], id * 3, c)) lit[i % 3] = false
+      if (lit.filter(Boolean).length === 2) out.push({ id, c, off: lit.indexOf(false) })
+    }
+  }
+  return out
+}
+
+// What is under each sparkle: per spot, a Map from a frame's lift (steadyOf)
+// to the most common color seen there with the sparkle off at that lift.
+function sparkUnder(p, spots, lifts) {
+  return spots.map((s) => {
+    const seen = new Map()
+    for (let i = s.off; i < p.frames.length; i += 3) {
+      if (!lifts.has(p.frames[i])) continue
+      const d = lifts.get(p.frames[i]) || 0
+      const tally = seen.get(d) || new Map()
+      const v = rgb(decodeB64(p.frames[i]), s.id * 3)
+      tally.set(v, (tally.get(v) || 0) + 1)
+      seen.set(d, tally)
+    }
+    const under = new Map()
+    for (const [d, tally] of seen) under.set(d, [...tally].sort((a, b) => b[1] - a[1])[0][0])
+    return { ...s, under }
+  })
+}
+
+// Paints each lit sparkle over with what is under it at this lift, so a
+// sparkle does not widen the head or raise the crown. With no frame to read it
+// from, one with body on both sides stays (it hides a body pixel) and any
+// other is painted with the backdrop.
+function unsparkle(buf, spots, lift) {
+  const lit = spots.filter((s) => samePx(buf, s.id * 3, s.c))
+  if (!lit.length) return
+  const bg = bgOf(buf)
+  const mask = bodyMask(buf, floorAt(buf), bg)
+  for (const s of lit) mask[s.id] = 0
+  for (const s of lit) {
+    const x = s.id % 16
+    const y = Math.floor(s.id / 16)
+    const u = s.under.get(lift)
+    if (u !== undefined) setPx(buf, x, y, [u >> 16, (u >> 8) & 255, u & 255])
+    else if (!(maskAt(mask, x - 1, y) && maskAt(mask, x + 1, y))) setPx(buf, x, y, bg)
+  }
 }
 
 // The pet's resting crown row, head span ([left, right, row]) and mouth row,
 // the most common answers across its frames as they are drawn (each at its
 // steady height, the chomp frame too). A flame that flickers wide, a blink
-// or a wave frame is outvoted.
+// or a wave frame is outvoted. Each of the crown row, head left, head right
+// and head row is voted on its own: a gleam sparkle that touches the head's
+// edge widens it on a few frames, each time in another place, and must not
+// split the vote.
 // null when key is not one of the pet's frames.
 const restCache = new WeakMap()
 function restOf(p, key) {
   const lifts = steadyOf(p)
   if (!lifts || !lifts.has(key)) return null
   if (restCache.has(p)) return restCache.get(p)
+  const spots = sparkUnder(p, sparkSpots(p), lifts)
   const steadied = (f) => {
     const buf = decodeB64(f)
+    unsparkle(buf, spots, lifts.get(f) || 0)
     if (lifts.get(f)) liftPet(buf, lifts.get(f))
     return buf
   }
   const alt = typeof p.chomp === 'string' && lifts.has(p.chomp) ? steadied(p.chomp) : null
-  const heads = new Map()
+  const heads = [new Map(), new Map(), new Map(), new Map()]
+  let seen = 0
   const mouths = new Map()
   const vote = (tally, v) => tally.set(v, (tally.get(v) || 0) + 1)
   for (const f of p.frames) {
@@ -2367,26 +2486,33 @@ function restOf(p, key) {
     const buf = steadied(f)
     const mask = restMask(buf)
     const m = boundsOf(mask, measure(buf))
-    vote(heads, [m.top, ...headSpan(m, mask)].join())
+    const span = [m.top, ...headSpan(m, mask)]
+    for (let i = 0; i < span.length; i++) vote(heads[i], span[i])
+    seen++
     vote(mouths, mouthAt(buf, alt, m.top, m.foot, floorAt(buf)))
   }
-  const best = (tally) => {
+  // The most common value; on a tie, the first seen, or with prefer, the one
+  // it picks (a tied head edge goes inward: a hat a pixel narrow still sits
+  // on the head, one a pixel wide hangs over its edge).
+  const best = (tally, prefer = null) => {
     let out = null
     let n = 0
     for (const [v, c] of tally) {
-      if (c > n) {
+      if (c > n || (c === n && prefer && prefer(v, out))) {
         n = c
         out = v
       }
     }
     return out
   }
-  const head = best(heads)
-  if (head === null) {
+  if (!seen) {
     restCache.set(p, null)
     return null
   }
-  const [top, a, b, y] = head.split(',').map(Number)
+  const top = best(heads[0])
+  const a = best(heads[1], (v, o) => v > o)
+  const b = best(heads[2], (v, o) => v < o)
+  const y = best(heads[3])
   const out = { top, head: [a, b, y], mouth: best(mouths) }
   restCache.set(p, out)
   return out
@@ -2634,14 +2760,22 @@ function rowSpan(mask, y) {
   return [a, b]
 }
 
-// Where a hat or cap sits: [left, right, row] of the first row from the top
-// that is at least half as wide as the body. An antenna, sprout, flame tip or
-// crown above it is narrower, so the hat goes on the head and they poke out.
+// Where a hat or cap sits: [left, right, row] of the first unbroken run of
+// pixels from the top that is at least half as wide as the body. An antenna,
+// sprout, flame tip, crown or a pair of ears above it is narrower (ears count
+// one at a time, not as the span between them), so the hat goes on the head
+// and they poke out.
 function headSpan(m, mask) {
   const need = Math.max(3, Math.ceil((m.maxX - m.minX + 1) / 2))
   for (let y = m.top; y <= m.foot; y++) {
-    const [a, b] = rowSpan(mask, y)
-    if (b - a + 1 >= need) return [a, b, y]
+    let best = null
+    for (let x = 0; x < 16; x++) {
+      if (!maskAt(mask, x, y) || maskAt(mask, x - 1, y)) continue
+      let b = x
+      while (maskAt(mask, b + 1, y)) b++
+      if (b - x + 1 >= need && (!best || b - x > best[1] - best[0])) best = [x, b]
+    }
+    if (best) return [best[0], best[1], y]
   }
   return [m.minX, m.maxX, m.top]
 }
