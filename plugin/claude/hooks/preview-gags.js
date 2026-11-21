@@ -34,7 +34,22 @@ const gags = {
   confetti: { start: () => startGag({ kind: 'confetti' }), at: [0, 3, 7, 11] },
   horror: { start: () => startGag({ kind: 'horror' }), at: [0, 1, 4] },
   nightcap: { start: () => __state({ hour: 2 }), at: [0] },
+  // The worn items by a forced clock; the coffee sips 2 ticks in, the napkin
+  // shows its bigger chomp on a bite that is open, then closed.
+  coffee: { start: () => __state({ hour: 8, sipIn: 2 }), at: [0, 2, 9] },
+  napkin: { start: () => __state({ hour: 12.5, bite: { mode: 'wait', tick: 12, xp: 1, kind: 'opus' } }), at: [0, 9] },
+  partyhat: { start: () => __state({ hour: 18, day: 5 }), at: [0] },
+  // The idle gags through the real roll: one tick before an idle minute, with
+  // rand forced (the yawn's first roll is the butterfly's, which must miss).
+  yawn: { start: () => __state({ hour: 15, idleTicks: 599, rand: rolls([0.99, 0]) }), at: [1, 3, 8, 16, 20] },
+  butterfly: { start: () => __state({ idleTicks: 599, rand: rolls([0]) }), at: [1, 8, 16, 30, 31, 60, 66] },
   idle: { start: () => null, at: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
+}
+
+// A rand that returns these values in turn, then 0.99 (no roll passes).
+function rolls(vals) {
+  let i = 0
+  return () => (i < vals.length ? vals[i++] : 0.99)
 }
 
 async function load(src) {
@@ -57,7 +72,9 @@ const $ = { ui: { invalidate() {} } }
 function play(payload, name) {
   const spec = gags[name]
   resetPortraitState()
-  __state({ portrait: { ...payload, status: 'awake' }, hour: 12, failRun: 0, gagsOn: true })
+__state({ hour: null, day: null, rand: null })
+  // 11:00 on a Wednesday wears nothing, and no idle gag rolls by chance.
+  __state({ portrait: { ...payload, status: 'awake' }, hour: 11, day: 3, rand: rolls([]), failRun: 0, gagsOn: true })
   const g = spec.start()
   const shots = []
   // The idle frames advance one per tick, as in the pane.
@@ -178,3 +195,4 @@ if (out) {
   console.log('wrote ' + out)
 }
 resetPortraitState()
+__state({ hour: null, day: null, rand: null })
