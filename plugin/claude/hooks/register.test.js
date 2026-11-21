@@ -1755,3 +1755,36 @@ test('solid mode: uniform cell is a space with background, two-color cell is ▀
   const i = (2 * 16 + 3) * 3
   assert.ok(cells[i] === 0x2580 || cells[i] === 0x2584)
 })
+
+test('solid mode: two-color cells use the glyph whose background matches the vertical neighbor', () => {
+  const palette = [[10, 20, 30], [200, 100, 50], [0, 255, 0]]
+  const px = []
+  for (let i = 0; i < 16 * 18; i++) px.push(...palette[(i * 7 + Math.floor(i / 16) * 3) % 3 === 0 ? 1 : i % 5 === 0 ? 2 : 0])
+  setRenderEnv({ override: 'solid', colorterm: '24bit' })
+  const cells = cellsOf(rasterOf(Buffer.from(Uint8Array.from(px)).toString('base64')))
+  setRenderEnv({})
+  // Rebuild the 16x18 pixel grid from the cells, then check each cell against the rule.
+  const grid = []
+  for (let y = 0; y < 9; y++) {
+    for (let x = 0; x < 16; x++) {
+      const [g, fg, bg] = cells.slice((y * 16 + x) * 3, (y * 16 + x) * 3 + 3)
+      grid[2 * y * 16 + x] = g === 0x2580 ? fg : g === 0x2584 ? bg : bg
+      grid[(2 * y + 1) * 16 + x] = g === 0x2580 ? bg : g === 0x2584 ? fg : bg
+    }
+  }
+  let mixed = 0
+  for (let y = 0; y < 9; y++) {
+    for (let x = 0; x < 16; x++) {
+      const [g, fg, bg] = cells.slice((y * 16 + x) * 3, (y * 16 + x) * 3 + 3)
+      if (g === 0x20) continue
+      mixed++
+      const top = grid[2 * y * 16 + x], bot = grid[(2 * y + 1) * 16 + x]
+      const above = y > 0 ? grid[(2 * y - 1) * 16 + x] : -1
+      const below = y < 8 ? grid[(2 * y + 2) * 16 + x] : -1
+      assert.notEqual(top, bot)
+      const upper = bot === below || top !== above
+      assert.deepEqual([g, fg, bg], upper ? [0x2580, top, bot] : [0x2584, bot, top])
+    }
+  }
+  assert.ok(mixed > 0)
+})
