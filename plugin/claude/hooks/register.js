@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.41'
+const VERSION = '0.4.42'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -409,6 +409,7 @@ function stepFrame($) {
   stepFeed()
   stepBits()
   stepGag()
+  stepIdleGags()
   if (sparkLeft > 0 && !bite) sparkLeft--
   if (idleHop > 0) idleHop--
   if (workLeft > 0) workLeft--
@@ -561,6 +562,10 @@ export function __state(patch) {
     if ('gagNext' in patch) gagNext = patch.gagNext
     if ('gagsOn' in patch) gagsOn = patch.gagsOn
     if ('hour' in patch) gagHour = patch.hour
+    if ('day' in patch) gagDay = patch.day
+    if ('rand' in patch) randFn = patch.rand || Math.random
+    if ('idleTicks' in patch) idleTicks = patch.idleTicks
+    if ('sipIn' in patch) sipAt = tick + patch.sipIn
     if ('failRun' in patch) failRun = patch.failRun
     if ('meals' in patch) [mealAvg, mealN] = patch.meals
     if ('idleHop' in patch) idleHop = patch.idleHop
@@ -571,6 +576,7 @@ export function __state(patch) {
   return {
     reviveLeft, gleamLeft, gleamEvolve, evolveLeft, portrait, petId, arriveLeft, arriveFrom, arriveTo, arrivePhase: arriveLeft > 0 ? arrivePhase() : '', note, namePrompt,
     gag, gagNext: gagNext && gagNext.g, gagsOn, failRun, slowLeft, mealAvg, mealN, busy: !!busy(), working: workLeft > 0, idleHop, quiet,
+    worn: wornNow(), idleTicks, sipping: sipLeft > 0,
   }
 }
 export { setRenderEnv, tickRevive, tickGleam, tickArrive, beginWake, gleamSpots, resetPortraitState, postSession, refresh, releaseConfirm, nameCommand, stepFrame, startGag, releaseGag, eyesOf }
@@ -1886,8 +1892,8 @@ function petTop(buf) {
 // Short reactions to what Claude does, drawn over the idle frames like hop and
 // sparkle. One transient gag runs at a time (gag) and one more may wait
 // (gagNext); a higher priority gag replaces the running one, a lower one waits
-// up to gagWait ticks or is dropped. The nightcap is persistent and draws
-// under it. A scene (wake, revive, arrive, evolve, gleam)
+// up to gagWait ticks or is dropped. The worn items (nightcap, party hat,
+// coffee mug, napkin) are persistent and draw under it. A scene (wake, revive, arrive, evolve, gleam)
 // drops every gag. During a bite the bite owns the body: a gag draws its
 // overlays on the moved sprite but none of its own body motion.
 let gagsOn = true
@@ -1895,26 +1901,58 @@ let gag = null
 let gagNext = null
 let thinking = null
 let failRun = 0
+// Clock overrides for tests and the preview: gagHour is a local hour, maybe
+// fractional (13.5 is 13:30), gagDay a weekday (0 is Sunday).
 let gagHour = null
+let gagDay = null
+// The one source of randomness for gags, so tests can stub it.
+let randFn = Math.random
+// Idle ticks since the last work, counted while no gag runs. Every
+// idleRollTicks of them (one idle minute) the rare gags roll once.
+let idleTicks = 0
+// The coffee mug's next sip (a tick) and the ticks left of the one playing.
+let sipAt = null
+let sipLeft = 0
 let mealAvg = 0
 let mealN = 0
 let slowLeft = 0
 let frameTick = 0
-const gagPrio = { think: 1, prop: 2, confetti: 3, burp: 4, horror: 4, flinch: 5, facepalm: 6, squish: 6, dizzy: 7 }
+// The idle gags (yawn, butterfly) rank under every reaction, so any real
+// reaction replaces them.
+const gagPrio = { yawn: 0, butterfly: 0, think: 1, prop: 2, confetti: 3, burp: 4, horror: 4, flinch: 5, facepalm: 6, squish: 6, dizzy: 7 }
 // Ticks (100ms) a gag plays once nothing holds it.
-const gagLen = { think: 0, prop: 30, confetti: 14, burp: 15, horror: 15, flinch: 8, facepalm: 15, squish: 10, dizzy: 20 }
+const gagLen = { yawn: 20, butterfly: 70, think: 0, prop: 30, confetti: 14, burp: 15, horror: 15, flinch: 8, facepalm: 15, squish: 10, dizzy: 20 }
 // Ticks (100ms) before a reaction gag of the same kind may start again, so a
 // run of failures or commits does not replay it back to back. The window
 // counts from when startGag took the gag (it played, merged or queued), not
 // from when it ended, so a long-held gag (a squish through a slow compaction)
-// does not stretch it. prop and think have none.
-const gagCooldown = { confetti: 100, burp: 100, horror: 100, flinch: 100, facepalm: 100, squish: 100, dizzy: 100 }
+// does not stretch it. prop and think have none. The idle gags cool down far
+// longer, so a yawn waits 3 minutes and a butterfly 30 before they can return.
+const gagCooldown = { yawn: 1800, butterfly: 18000, confetti: 100, burp: 100, horror: 100, flinch: 100, facepalm: 100, squish: 100, dizzy: 100 }
 // Kind -> the tick its cooldown started.
 const gagCool = new Map()
-// The gags that cover the head, so the nightcap steps aside.
+// Worn items draw under the running gag, in two slots, one item each:
+// - Head: the party hat (Friday 16:00-24:00) beats the nightcap (00:00-05:00).
+//   A head gag (headGags) takes the slot from both, except the hard hat prop
+//   while the party hat is worn: the party hat stays and the hard hat is not
+//   drawn, so two hats never stack.
+// - Mouth: the coffee mug (07:00-10:00) or the napkin (12:00-13:30), never
+//   both. Both step aside for the gags that use the mouth or the belly under
+//   it (mouthGags). The mug, held beside the body, also steps aside for the
+//   props drawn beside the body (sideGags) and during a bite, which owns the
+//   mouth. The napkin stays through a bite, and the bite chomps bigger.
+// - The butterfly lands on top of whatever the head wears.
+// An egg wears nothing.
 const headGags = new Set(['think', 'dizzy', 'horror', 'hat'])
-// Gags that are not worn, so an egg plays them too.
-const eggGags = new Set(['think', 'flinch', 'dizzy', 'squish', 'confetti', 'burp', 'horror'])
+const mouthGags = new Set(['burp', 'horror', 'yawn', 'facepalm'])
+const sideGags = new Set(['pencil', 'clone'])
+// Gags that are not worn, so an egg plays them too. An egg yawns with the
+// rising z only: it has no face to squint or open, but a drowsy z reads on any
+// shape.
+const eggGags = new Set(['think', 'flinch', 'dizzy', 'squish', 'confetti', 'burp', 'horror', 'yawn', 'butterfly'])
+const idleRollTicks = 600
+const yawnOdds = 4
+const butterflyOdds = 300
 const thinkCap = 600
 const holdCap = 3000
 const gagWait = 20
@@ -1944,6 +1982,9 @@ const pxSky = [0x7e, 0xc8, 0xe3]
 const pxGray = [0xc8, 0xc4, 0xd4]
 const pxExp = [0x9d, 0x8c, 0xff]
 const pxInk = [0x2a, 0x26, 0x40]
+const pxCoffee = [0x6b, 0x3e, 0x26]
+const pxPink = [0xff, 0x8a, 0xd8]
+const pxZ = [0xc8, 0xc4, 0xdc]
 
 function sceneOn() {
   return wakeLeft > 0 || !!wakeFrom || reviveLeft > 0 || arriveLeft > 0 || evolveLeft > 0 || gleamLeft > 0
@@ -1964,9 +2005,43 @@ function gagShown() {
   return !!gag && gagsOn && !sceneOn() && petAwake()
 }
 
-function lateNight() {
-  const h = gagHour !== null ? gagHour : new Date().getHours()
-  return h >= 0 && h < 5
+function rand() {
+  return randFn()
+}
+
+// The local time as { h, day }: h in hours with minutes as a fraction.
+function clockNow() {
+  const d = gagHour === null || gagDay === null ? new Date() : null
+  return { h: gagHour !== null ? gagHour : d.getHours() + d.getMinutes() / 60, day: gagDay !== null ? gagDay : d.getDay() }
+}
+
+function lateNight(c = clockNow()) {
+  return c.h >= 0 && c.h < 5
+}
+
+function coffeeTime(c = clockNow()) {
+  return c.h >= 7 && c.h < 10
+}
+
+function lunchTime(c = clockNow()) {
+  return c.h >= 12 && c.h < 13.5
+}
+
+function yawnTime(c = clockNow()) {
+  return c.h >= 14 && c.h < 16
+}
+
+function partyTime(c = clockNow()) {
+  return c.day === 5 && c.h >= 16
+}
+
+// What the pet wears now by the clock alone, before any gag takes a slot.
+function wornNow(c = clockNow()) {
+  if (!gagsOn || !portrait || petEgg()) return { head: null, mouth: null }
+  return {
+    head: partyTime(c) ? 'partyhat' : lateNight(c) ? 'nightcap' : null,
+    mouth: coffeeTime(c) ? 'coffee' : lunchTime(c) ? 'napkin' : null,
+  }
 }
 
 // startGag returns the gag a caller holds and later releases, or null when it
@@ -2027,6 +2102,9 @@ function clearGags() {
   gag = null
   gagNext = null
   gagCool.clear()
+  idleTicks = 0
+  sipAt = null
+  sipLeft = 0
   thinking = null
   failRun = 0
   slowLeft = 0
@@ -2066,6 +2144,44 @@ function promoteGag() {
   gag = gagNext.g
   gagNext = null
   gag.t = 0
+}
+
+// The timed gags, once per tick: the coffee sips, and the idle gags (yawn,
+// butterfly) rolled once per idle minute. Idle is no work, no bite or meal
+// arriving, the pet awake and no scene. A running gag pauses the count, work
+// resets it, and an idle gag only starts when nothing else runs.
+function stepIdleGags() {
+  if (!gagsOn || !portrait || sceneOn() || !petAwake()) {
+    idleTicks = 0
+    return
+  }
+  const c = clockNow()
+  stepSip(c)
+  if (workLeft > 0 || bite || bites.length > 0 || sparkLeft > 0) {
+    idleTicks = 0
+    return
+  }
+  if (gag || gagNext) return
+  idleTicks++
+  if (idleTicks % idleRollTicks !== 0) return
+  if (rand() * butterflyOdds < 1 && startGag({ kind: 'butterfly' })) return
+  if (yawnTime(c) && rand() * yawnOdds < 1) startGag({ kind: 'yawn' })
+}
+
+// A sip every 8 to 15s while the mug is worn: the mug lifts to the mouth for
+// sipTicks ticks.
+const sipTicks = 6
+function stepSip(c) {
+  if (wornNow(c).mouth !== 'coffee') {
+    sipAt = null
+    sipLeft = 0
+    return
+  }
+  if (sipLeft > 0) sipLeft--
+  if (sipAt === null) sipAt = tick + 80 + Math.floor(rand() * 70)
+  if (tick < sipAt) return
+  sipLeft = sipTicks
+  sipAt = tick + 80 + Math.floor(rand() * 70)
 }
 
 function endThink() {
@@ -2166,7 +2282,7 @@ function stepConfetti(g) {
   }
 }
 
-// paintGags draws the persistent nightcap, then the running gag.
+// paintGags draws the worn items (see headGags for the slot rules), then the running gag.
 // m is the idle frame's measure (before any lift).
 // lift is how far a bite or hop raised the body this frame, and key the frame
 // drawn: head overlays sit on the pet's resting head (found once per pet)
@@ -2176,7 +2292,8 @@ function paintGags(buf, m0, lift = 0, key = null) {
   if (!gagsOn || !portrait || sceneOn() || !petAwake()) return
   const egg = petEgg()
   const g = gagShown() ? gag : null
-  if (!g && (egg || !lateNight())) return
+  const worn = wornNow()
+  if (!g && !worn.head && !worn.mouth) return
   // A bite, hop or seam nudge may have moved the sprite: measure it as it is now.
   // The mouth comes from the idle frame (its chomp diff), shifted along.
   const rest = restOf(portrait, key)
@@ -2194,9 +2311,20 @@ function paintGags(buf, m0, lift = 0, key = null) {
   // The eyes are found once per pet, so a blink frame never moves the props.
   const fixed = petEyes(portrait)
   const eyes = fixed ? { y: top + fixed.ry, lx: fixed.lx + dx, rx: fixed.rx + dx, w: fixed.w, found: true } : eyesOf(buf, m, mask)
-  const k = { buf, m, mask, top, mouth: still ? rest.mouth - lift : m0.mouth + (m.top - m0.top), eyes, head }
-  if (!egg && lateNight() && !(g && (headGags.has(g.kind) || headGags.has(g.prop)))) nightcap(k)
-  if (g) gagOverlay(k, g)
+  const k = { buf, m, mask, top, mouth: still ? rest.mouth - lift : m0.mouth + (m.top - m0.top), eyes, head, egg, crown: top }
+  const party = worn.head === 'partyhat'
+  // The hard hat under a party hat is not drawn: the party hat keeps the head.
+  const hardHat = !!g && g.kind === 'prop' && g.prop === 'hat'
+  const headTaken = !!g && (headGags.has(g.kind) || headGags.has(g.prop)) && !(party && hardHat)
+  const mouthTaken = !!g && mouthGags.has(g.kind)
+  if (worn.mouth === 'napkin' && !mouthTaken) {
+    if (bite && bitePose(bite, m0).open) bigChomp(k)
+    napkin(k)
+  }
+  if (worn.mouth === 'coffee' && !mouthTaken && !bite && !(g && sideGags.has(g.prop))) mug(k, sipLeft > 0)
+  if (worn.head === 'partyhat' && !headTaken) k.crown = partyHat(k)
+  else if (worn.head === 'nightcap' && !headTaken) k.crown = nightcap(k)
+  if (g && !(party && hardHat)) gagOverlay(k, g)
 }
 
 // The pet's mask for placing overlays. A pet that stands over the ground's top
@@ -2346,6 +2474,8 @@ function gagOverlay(k, g) {
   } else if (g.kind === 'dizzy') stars(k, g)
   else if (g.kind === 'horror') horror(k)
   else if (g.kind === 'confetti') for (const b of g.bits) paint(k.buf, b.x, b.y, b.c)
+  else if (g.kind === 'yawn') yawn(k, g)
+  else if (g.kind === 'butterfly') butterfly(k, g)
 }
 
 // Moves the pet sideways, feet on the ground band included (as liftPet moves
@@ -2592,6 +2722,140 @@ function nightcap(k) {
   for (let x = mid + 1; x <= b + 1; x++) paint(k.buf, x, y - 3, pxExp)
   paint(k.buf, b + 2, y - 2, pxExp)
   paint(k.buf, b + 2, y - 1, pxText)
+  return y - 3
+}
+
+// A striped cone on the middle of the head, a white pompom on its tip.
+// Returns its top row.
+function partyHat(k) {
+  const [a, b] = k.head
+  const y = k.head[2] - 1
+  const mid = (a + b) >> 1
+  for (let x = mid - 2; x <= mid + 2; x++) paint(k.buf, x, y, pxGold)
+  for (let x = mid - 1; x <= mid + 1; x++) paint(k.buf, x, y - 1, pxWarn)
+  paint(k.buf, mid, y - 2, pxGold)
+  paint(k.buf, mid, y - 3, pxWhite)
+  return y - 3
+}
+
+// The middle of the face doubled (lx + rx), and a span of width w centered on
+// it: w drops by one when the middle falls on a pixel, so the span stays even
+// on both sides.
+function faceSpan(k, w) {
+  const c2 = k.eyes.lx + k.eyes.rx
+  const n = c2 % 2 ? w : w - 1
+  const x0 = (c2 - n + 1) >> 1
+  return [x0, x0 + n - 1]
+}
+
+// The mouth row for the face items (napkin, mug, yawn): k.mouth, kept 1 to 3
+// rows under the eyes. Some chomp frames move the feet, not the mouth, which
+// puts k.mouth on the legs.
+function faceMouth(k) {
+  return Math.max(k.eyes.y + 1, Math.min(k.eyes.y + 3, k.mouth))
+}
+
+// A white napkin tucked under the mouth, a point hanging down. It sits on the
+// body only, one row under the mouth's lowest row (a chomp frame opens there).
+function napkin(k) {
+  const y = faceMouth(k) + 2
+  ;[6, 4, 2].forEach((w, i) => {
+    const [x0, x1] = faceSpan(k, w)
+    for (let x = x0; x <= x1; x++) if (maskAt(k.mask, x, y + i)) paint(k.buf, x, y + i, i === 2 ? pxGray : pxWhite)
+  })
+}
+
+// While the napkin is worn, an open bite gapes wider: a dark mouth 4 wide and
+// 2 tall over the mouth rows, on the body only.
+function bigChomp(k) {
+  const [x0, x1] = faceSpan(k, 4)
+  const mouth = faceMouth(k)
+  for (let y = mouth; y <= mouth + 1; y++) {
+    for (let x = x0; x <= x1; x++) if (maskAt(k.mask, x, y)) paint(k.buf, x, y, pxInk)
+  }
+}
+
+// A steaming mug, its rim a row under the mouth: beside the body when 3
+// columns are free there (right first), else held in front, right of the
+// mouth. A sip lifts it to the mouth (one cell beside the body, one row in
+// front, where the eyes are close) and one column in, and the steam stops.
+function mug(k, sipping) {
+  const { m } = k
+  const mouth = faceMouth(k)
+  const right = m.maxX <= 12 || m.minX < 3
+  const beside = m.maxX <= 12 || m.minX >= 3
+  const dir = beside && !right ? -1 : 1
+  let x0 = !beside ? faceSpan(k, 2)[1] + 2 : right ? m.maxX + 1 : m.minX - 2
+  let y = mouth + 1
+  if (sipping) {
+    x0 -= dir
+    y -= beside ? 2 : 1
+  }
+  const handle = dir > 0 ? x0 + 2 : x0 - 1
+  for (let x = x0; x <= x0 + 1; x++) {
+    paint(k.buf, x, y, pxCoffee)
+    paint(k.buf, x, y + 1, pxExp)
+    paint(k.buf, x, y + 2, pxExp)
+  }
+  paint(k.buf, handle, y + 1, pxExp)
+  if (sipping) return
+  const s = (tick >> 2) & 1
+  paint(k.buf, x0 + s, y - 1, pxGray)
+  paint(k.buf, x0 + 1 - s, y - 2, pxGray)
+}
+
+// A wide yawn: the eyes squint shut, the mouth opens dark (small, wide, then
+// small again) and a z rises beside the head. An egg shows the z only.
+function yawn(k, g) {
+  const { buf, eyes, mask } = k
+  if (!k.egg) {
+    const { y, lx, rx, w } = eyes
+    const [a] = rowSpan(mask, y)
+    const edge = a < 16 ? [buf[(y * 16 + a) * 3], buf[(y * 16 + a) * 3 + 1], buf[(y * 16 + a) * 3 + 2]] : pxInk
+    // Each eye shuts to a line one pixel wider than the eye, outward.
+    for (let x = lx - 1; x < lx + w; x++) paint(buf, x, y, edge)
+    for (let x = rx - w + 1; x <= rx + 1; x++) paint(buf, x, y, edge)
+    const wide = g.t >= 3 && g.t < 17
+    const [x0, x1] = faceSpan(k, wide ? 4 : 2)
+    const mouth = faceMouth(k)
+    for (let yy = mouth; yy <= mouth + (wide ? 1 : 0); yy++) {
+      for (let x = x0; x <= x1; x++) if (maskAt(mask, x, yy)) paint(buf, x, yy, pxInk)
+    }
+  }
+  if (g.t < 4) return
+  zed(buf, Math.min(13, k.head[1] + 1), k.head[2] - 2 - ((g.t - 4) >> 2), pxZ)
+}
+
+// A butterfly flutters in from the left, lands on top of the head (or of the
+// hat it wears) for 4s, then flies off up to the right. Its wings flap: open
+// (two rows of wing) and shut (one row over the body).
+const butterflyIn = 15
+const butterflySit = 40
+function butterfly(k, g) {
+  const lx = (k.head[0] + k.head[1]) >> 1
+  const ly = k.crown - 1
+  const t = g.t
+  let x = lx
+  let y = ly
+  if (t < butterflyIn) {
+    const u = t / butterflyIn
+    x = -2 + (lx + 2) * u
+    y = ly - 4 * (1 - u) + Math.round(Math.sin(t * 1.3))
+  } else if (t >= butterflyIn + butterflySit) {
+    const u = (t - butterflyIn - butterflySit + 1) / (gagLen.butterfly - butterflyIn - butterflySit)
+    x = lx + (18 - lx) * u
+    y = ly - 9 * u + Math.round(Math.sin(t * 1.3))
+  }
+  x = Math.round(x)
+  y = Math.round(y)
+  const open = t < butterflyIn || t >= butterflyIn + butterflySit ? t % 2 === 0 : (t >> 1) % 2 === 0
+  if (open) {
+    for (const dx of [-1, 1]) {
+      paint(k.buf, x + dx, y - 1, pxPink)
+      paint(k.buf, x + dx, y, pxGold)
+    }
+  } else paint(k.buf, x, y - 1, pxPink)
+  paint(k.buf, x, y, pxInk)
 }
 
 // A magnifier ring around the right eye, handle down to the side.

@@ -827,6 +827,9 @@ const G = {
   exp: [0x9d, 0x8c, 0xff],
   ink: [0x2a, 0x26, 0x40],
   warn: [0xff, 0x5a, 0x36],
+  coffee: [0x6b, 0x3e, 0x26],
+  gray: [0xc8, 0xc4, 0xd4],
+  z: [0xc8, 0xc4, 0xdc],
 }
 const gagPet = (() => {
   const px = []
@@ -863,7 +866,7 @@ const topOf = () => {
 }
 function gagSetup(over = {}) {
   resetPortraitState()
-  __state({ portrait: { frames: [gagPet], growth: 25000, name: 'Gag', status: 'awake', ...over }, hour: 12, gagsOn: true, failRun: 0, bite: null })
+  __state({ portrait: { frames: [gagPet], growth: 25000, name: 'Gag', status: 'awake', ...over }, hour: 11, day: 3, rand: () => 0.99, gagsOn: true, failRun: 0, bite: null })
 }
 function allHooks() {
   const out = {}
@@ -879,7 +882,7 @@ const deferred = () => {
   return { p, resolve, reject }
 }
 
-__state({ hour: 12 })
+__state({ hour: 11 })
 
 test('gag pet: the eye finder finds the test pet eyes', () => {
   const raw = Buffer.from(gagPet, 'base64')
@@ -1057,7 +1060,7 @@ test('gag 4, abort dizzy: turn.abort or an aborted turn skids, then stars orbit 
 
 test('gag 5, big meal: a turn 3x the usual bulges the belly, says burp!, then slows the bob', async () => {
   freshPet({ portrait: { frames: [gagPet], growth: 25000, name: 'Gag', status: 'awake' } })
-  __state({ hour: 12, gagsOn: true, meals: [100, 3] })
+  __state({ hour: 11, gagsOn: true, meals: [100, 3] })
   const h = allHooks()
   const host = server({})
   // 30000 opus output tokens = 1200 xp, 12x the 100 xp average
@@ -1245,7 +1248,7 @@ test('gag 8, late night: a nightcap from 00:00 to 05:00', () => {
   __state({ hour: 2 })
   startGag({ kind: 'prop', prop: 'hat', held: 1 })
   assert.deepEqual(pxAt(5, 5), G.fed)
-  __state({ hour: 12 })
+  __state({ hour: 11 })
 })
 
 test('gags: one at a time, higher priority replaces, lower waits then drops', () => {
@@ -1414,7 +1417,294 @@ test('/omn gags off turns every gag and the nightcap off, on brings them back', 
   assert.equal(host.data.get('gags'), 'on')
   assert.deepEqual(pxAt(5, 5), G.text)
   assert.deepEqual(await omn(host.$, { args: 'gags maybe' }), { text: 'usage: /omn gags on|off' })
-  __state({ hour: 12 })
+  __state({ hour: 11 })
+})
+
+// A rand that returns these values in turn, then 0.99 (no roll passes).
+const rolls = (vals) => {
+  let i = 0
+  return () => (i < vals.length ? vals[i++] : 0.99)
+}
+const wornAt = (hour, day = 3) => {
+  __state({ hour, day })
+  return __state().worn
+}
+const openBite = () => ({ mode: 'wait', tick: 12, xp: 1, kind: 'opus' })
+
+test('gag 9, time windows: coffee 07-10, napkin 12-13:30, party hat Friday 16-24, nightcap 00-05', () => {
+  gagSetup()
+  assert.equal(wornAt(6 + 59 / 60).mouth, null, '06:59')
+  assert.equal(wornAt(7).mouth, 'coffee', '07:00')
+  assert.equal(wornAt(9 + 59 / 60).mouth, 'coffee', '09:59')
+  assert.equal(wornAt(10).mouth, null, '10:00')
+  assert.equal(wornAt(11 + 59 / 60).mouth, null, '11:59')
+  assert.equal(wornAt(12).mouth, 'napkin', '12:00')
+  assert.equal(wornAt(13 + 29 / 60).mouth, 'napkin', '13:29')
+  assert.equal(wornAt(13.5).mouth, null, '13:30')
+  assert.equal(wornAt(15 + 59 / 60, 5).head, null, 'Friday 15:59')
+  assert.equal(wornAt(16, 5).head, 'partyhat', 'Friday 16:00')
+  assert.equal(wornAt(23 + 59 / 60, 5).head, 'partyhat', 'Friday 23:59')
+  assert.equal(wornAt(18, 4).head, null, 'Thursday')
+  assert.equal(wornAt(0, 6).head, 'nightcap', 'Saturday 00:00 is the nightcap again')
+  assert.equal(wornAt(2, 5).head, 'nightcap', 'Friday 02:00 is no party')
+  assert.equal(wornAt(5).head, null, '05:00')
+  assert.equal(__state().busy, false, 'worn items keep the pet idle')
+  // An idle pane picks the item up on its next render, with no event between.
+  __state({ hour: 6 + 59 / 60 })
+  assert.deepEqual(pxAt(13, 12), G.bg)
+  __state({ hour: 7 })
+  assert.deepEqual(pxAt(13, 12), G.coffee)
+  __state({ hour: 11, day: 3 })
+})
+
+test('gag 9, worn items: mug beside the body sips now and then, napkin under the mouth chomps bigger', () => {
+  gagSetup()
+  __state({ hour: 8, rand: () => 0 })
+  // Beside the body, rim a row under the mouth (row 11), handle outward, steam over it.
+  assert.deepEqual([pxAt(13, 12), pxAt(14, 12), pxAt(13, 13), pxAt(14, 14), pxAt(15, 13)], [G.coffee, G.coffee, G.exp, G.exp, G.exp])
+  assert.ok([pxAt(13, 11), pxAt(14, 11)].some((c) => c.join() === G.gray.join()), 'steam')
+  // The first sip comes 8s after the mug's first tick with rand 0, lifts the
+  // mug one cell and one column in, for 6 ticks.
+  ticks(80)
+  assert.equal(__state().sipping, false)
+  ticks(1)
+  assert.equal(__state().sipping, true)
+  // (The idle hop just started lifts the mug with the body; hold it still.)
+  __state({ idleHop: 0 })
+  assert.deepEqual([pxAt(12, 10), pxAt(13, 10)], [G.coffee, G.coffee])
+  assert.deepEqual(pxAt(14, 12), G.bg)
+  ticks(6)
+  assert.equal(__state().sipping, false)
+  // The next sip is 8 to 15s later.
+  ticks(73)
+  assert.equal(__state().sipping, false)
+  ticks(1)
+  assert.equal(__state().sipping, true)
+  // The napkin: 6, 4 wide on the body under the mouth, its point cut by the ground.
+  gagSetup()
+  __state({ hour: 12.5 })
+  for (let x = 5; x <= 10; x++) assert.deepEqual(pxAt(x, 13), G.white, 'napkin ' + x)
+  for (let x = 6; x <= 9; x++) assert.deepEqual(pxAt(x, 14), G.white)
+  assert.deepEqual(pxAt(4, 13), G.fill)
+  assert.deepEqual(pxAt(7, 15), G.ground)
+  assert.deepEqual(pxAt(7, 11), G.fill, 'mouth shut')
+  // An open bite gapes 4 wide and 2 tall over the mouth; the napkin stays.
+  __state({ bite: openBite() })
+  // (The food sits in the middle of the top row.)
+  for (let x = 6; x <= 9; x++) assert.deepEqual(pxAt(x, 12), G.ink)
+  assert.deepEqual([pxAt(6, 11), pxAt(9, 11)], [G.ink, G.ink])
+  assert.deepEqual(pxAt(5, 13), G.white)
+  // Without the napkin the same bite has no big chomp.
+  __state({ hour: 11 })
+  assert.notDeepEqual(pxAt(6, 11), G.ink)
+})
+
+test('gag 9, stacking: party hat over the nightcap and hard hat, a head gag over the party hat, mouth gags over mug and napkin', () => {
+  gagSetup()
+  __state({ hour: 18, day: 5 })
+  // The cone: 5 wide gold base, 3 red, gold tip, white pompom, on the middle of the head.
+  assert.deepEqual([pxAt(5, 5), pxAt(9, 5), pxAt(6, 4), pxAt(7, 3), pxAt(7, 2)], [G.gold, G.gold, G.warn, G.gold, G.white])
+  assert.deepEqual(pxAt(3, 5), G.bg, 'no nightcap trim')
+  // The Bash hard hat does not stack on it: the party hat stays and the hard hat is not drawn.
+  const hat = startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  assert.deepEqual([pxAt(7, 2), pxAt(3, 5), pxAt(12, 5)], [G.white, G.bg, G.bg])
+  releaseGag(hat)
+  __state({ gag: null })
+  // A head gag takes the head from the party hat.
+  startGag({ kind: 'dizzy' })
+  ticks(4)
+  assert.notDeepEqual(pxAt(7, 2), G.white)
+  __state({ gag: null })
+  startGag({ kind: 'think', held: 1 })
+  assert.deepEqual(pxAt(7, 2), G.bg)
+  // Saturday night: the nightcap, and the hard hat over it as before.
+  gagSetup()
+  __state({ hour: 2, day: 6 })
+  assert.deepEqual(pxAt(3, 5), G.text)
+  startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  assert.deepEqual(pxAt(3, 5), G.fed)
+  // Mouth gags push the mug and the napkin aside; a bite and the side props push the mug.
+  for (const [hour, x, y, c] of [[8, 13, 12, G.coffee], [12.5, 5, 13, G.white]]) {
+    for (const kind of ['burp', 'horror', 'yawn', 'facepalm']) {
+      gagSetup()
+      __state({ hour })
+      assert.deepEqual(pxAt(x, y), c)
+      startGag({ kind })
+      assert.notDeepEqual(pxAt(x, y), c, kind + ' at ' + hour)
+    }
+  }
+  for (const prop of ['pencil', 'clone']) {
+    gagSetup()
+    __state({ hour: 8 })
+    startGag({ kind: 'prop', prop, held: 1 })
+    ticks(3)
+    assert.notDeepEqual(pxAt(14, 12), G.coffee, prop)
+  }
+  gagSetup()
+  __state({ hour: 8, bite: openBite() })
+  assert.notDeepEqual(pxAt(13, 12), G.coffee, 'bite')
+  // Other gags leave the mug on: a hard hat on the head.
+  gagSetup()
+  __state({ hour: 8 })
+  startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  assert.deepEqual(pxAt(13, 12), G.coffee)
+})
+
+test('gag 9, eggs: wear nothing, yawn with the z only, and get the butterfly', () => {
+  gagSetup({ growth: 0 })
+  for (const [hour, day] of [[8, 3], [12.5, 3], [18, 5], [2, 3]]) {
+    assert.deepEqual(wornAt(hour, day), { head: null, mouth: null })
+  }
+  __state({ hour: 18, day: 5 })
+  assert.deepEqual(pxAt(7, 2), G.bg)
+  __state({ hour: 8 })
+  assert.deepEqual(pxAt(13, 12), G.bg)
+  __state({ hour: 15 })
+  assert.equal(startGag({ kind: 'yawn' }).kind, 'yawn')
+  ticks(8)
+  assert.deepEqual(pxAt(14, 3), G.z, 'the z')
+  assert.deepEqual([pxAt(5, 9), pxAt(10, 9)], [G.eye, G.eye], 'eyes open')
+  for (let x = 6; x <= 9; x++) assert.deepEqual([pxAt(x, 11), pxAt(x, 12)], [G.fill, G.fill], 'mouth shut')
+  gagSetup({ growth: 0 })
+  assert.equal(startGag({ kind: 'butterfly' }).kind, 'butterfly')
+})
+
+test('gag 10, yawn: mouth wide, eyes shut, a z rising; rolled per idle minute 14:00-16:00 with a 3 min cooldown', () => {
+  gagSetup()
+  __state({ hour: 15, rand: rolls([0.99, 0]) })
+  ticks(599)
+  assert.equal(__state().gag, null)
+  ticks(1)
+  assert.equal(__state().gag.kind, 'yawn')
+  assert.deepEqual([pxAt(4, 9), pxAt(5, 9), pxAt(10, 9), pxAt(11, 9)], [G.line, G.line, G.line, G.line])
+  ticks(4)
+  for (let x = 6; x <= 9; x++) assert.deepEqual([pxAt(x, 11), pxAt(x, 12)], [G.ink, G.ink])
+  ticks(4)
+  assert.deepEqual(pxAt(14, 3), G.z)
+  ticks(4)
+  assert.deepEqual(pxAt(14, 2), G.z, 'the z rises')
+  ticks(8)
+  assert.equal(__state().gag, null, '2s long')
+  // The window's edges, with every roll passing yawn's odds but missing the butterfly.
+  for (const [hour, want] of [[13 + 59 / 60, null], [14, 'yawn'], [15 + 59 / 60, 'yawn'], [16, null]]) {
+    gagSetup()
+    __state({ hour, idleTicks: 599, rand: rolls([0.99, 0]) })
+    ticks(1)
+    assert.equal(__state().gag && __state().gag.kind, want, 'at ' + hour)
+  }
+  // 1 in 4: a roll of 0.25 misses.
+  gagSetup()
+  __state({ hour: 15, idleTicks: 599, rand: rolls([0.99, 0.25]) })
+  ticks(1)
+  assert.equal(__state().gag, null)
+  // The cooldown: no second yawn for 3 minutes from the first.
+  gagSetup()
+  __state({ hour: 15, idleTicks: 599, rand: () => 0.1 })
+  ticks(1)
+  assert.equal(__state().gag.kind, 'yawn')
+  // It plays 2s (the count pauses), then a roll each idle minute: 1:02 and
+  // 2:02 are cooling, 3:02 yawns again.
+  ticks(1818)
+  assert.equal(__state().gag, null, 'still cooling')
+  ticks(1)
+  assert.equal(__state().gag.kind, 'yawn', 'again after 3 minutes')
+})
+
+test('gag 11, butterfly: about 1 in 300 per idle minute, only when idle, lands on the head 4s, 30 min cooldown', () => {
+  gagSetup()
+  __state({ rand: () => 0 })
+  ticks(599)
+  assert.equal(__state().gag, null)
+  ticks(1)
+  const b = __state().gag
+  assert.equal(b.kind, 'butterfly')
+  assert.equal(b.prio, 0)
+  // Flies in, then sits over the head's middle (x 7, row 5) flapping, then leaves.
+  ticks(20)
+  const sat = [pxAt(7, 5), pxAt(7, 4)]
+  assert.deepEqual(sat[0], G.ink)
+  ticks(2)
+  assert.notDeepEqual([pxAt(6, 4), pxAt(7, 4), pxAt(8, 4)].map(String).join(), [sat[1], sat[1], sat[1]].map(String).join(), 'wings flap')
+  ticks(48)
+  assert.equal(__state().gag, null, '7s in all')
+  // 1 in 300: a roll at 1/300 misses.
+  gagSetup()
+  __state({ idleTicks: 599, rand: () => 1 / 300 })
+  ticks(1)
+  assert.equal(__state().gag, null)
+  // Never back to back: cooling down 30 minutes from the start.
+  gagSetup()
+  __state({ idleTicks: 599, rand: () => 0 })
+  ticks(1)
+  assert.equal(__state().gag.kind, 'butterfly')
+  __state({ gag: null, idleTicks: 599 })
+  ticks(1)
+  assert.equal(__state().gag, null, 'cooling')
+})
+
+test('gag 11, idle gags start only when idle, and any reaction beats them', () => {
+  // Work (a bite) resets the idle count.
+  gagSetup()
+  __state({ idleTicks: 599, rand: () => 0, bite: openBite() })
+  ticks(1)
+  assert.equal(__state().idleTicks, 0)
+  assert.equal(__state().gag, null)
+  // A running gag pauses the count and is never joined by an idle gag.
+  gagSetup()
+  const hat = startGag({ kind: 'prop', prop: 'hat', held: 1 })
+  __state({ idleTicks: 599, rand: () => 0 })
+  ticks(1)
+  assert.equal(__state().idleTicks, 599)
+  assert.equal(__state().gag.prop, 'hat')
+  releaseGag(hat)
+  // Asleep, dead, or in a scene: no roll.
+  for (const over of [{ status: 'sleeping' }, { status: 'dead' }]) {
+    gagSetup(over)
+    __state({ idleTicks: 599, rand: () => 0 })
+    ticks(1)
+    assert.equal(__state().gag, null, over.status)
+  }
+  gagSetup()
+  __state({ idleTicks: 599, rand: () => 0, evolveLeft: 5 })
+  ticks(1)
+  assert.equal(__state().gag, null, 'scene')
+  // A reaction replaces a butterfly at once.
+  gagSetup()
+  __state({ idleTicks: 599, rand: () => 0 })
+  ticks(1)
+  assert.equal(__state().gag.kind, 'butterfly')
+  startGag({ kind: 'flinch' })
+  assert.equal(__state().gag.kind, 'flinch')
+  gagSetup()
+  __state({ hour: 15, idleTicks: 599, rand: rolls([0.99, 0]) })
+  ticks(1)
+  assert.equal(__state().gag.kind, 'yawn')
+  startGag({ kind: 'think', held: 1 })
+  assert.equal(__state().gag.kind, 'think')
+})
+
+test('/omn gags off hides every worn item and stops the idle gags', async () => {
+  gagSetup()
+  const host = server({})
+  const omn = allHooks()['command.run:omn']
+  __state({ hour: 18, day: 5 })
+  assert.deepEqual(pxAt(7, 2), G.white)
+  startGag({ kind: 'butterfly' })
+  await omn(host.$, { args: 'gags off' })
+  assert.equal(__state().gag, null)
+  assert.deepEqual(__state().worn, { head: null, mouth: null })
+  for (const [hour, day, x, y] of [[18, 5, 7, 2], [8, 3, 13, 12], [12.5, 3, 5, 13]]) {
+    __state({ hour, day })
+    assert.deepEqual(pxAt(x, y), x === 5 ? G.fill : G.bg, hour + '')
+  }
+  for (const kind of ['yawn', 'butterfly']) assert.equal(startGag({ kind }), null, kind)
+  __state({ hour: 15, idleTicks: 599, rand: () => 0 })
+  ticks(1)
+  assert.equal(__state().gag, null)
+  await omn(host.$, { args: 'gags on' })
+  __state({ hour: 18, day: 5 })
+  assert.deepEqual(pxAt(7, 2), G.white)
+  __state({ hour: 11, day: 3 })
 })
 
 test('gags: the three render modes draw the same gag pixels', () => {
@@ -1622,13 +1912,13 @@ test('steady: gag overlay rows stay constant across frames of an animated pet', 
   // The nightcap too.
   gagSetup({ frames: bobPet })
   const caps = bobPet.map((f) => {
-    __state({ hour: 12 })
+    __state({ hour: 11 })
     const plain = shownRgb(f).join()
     __state({ hour: 2 })
     const capped = shownRgb(f)
     return capped.join() === plain ? '' : petTop(capped)
   })
-  __state({ hour: 12 })
+  __state({ hour: 11 })
   assert.equal(new Set(caps).size, 1, 'nightcap: ' + caps)
   assert.notEqual(caps[0], '')
   resetPortraitState()
@@ -1713,7 +2003,7 @@ test('head props: hard hat and nightcap keep their gap to the head on every fram
       }
     }
   }
-  __state({ hour: 12, idleHop: 0, bite: null })
+  __state({ hour: 11, idleHop: 0, bite: null })
 })
 
 test('food: the bite token draws over the hard hat on every bite frame', () => {
