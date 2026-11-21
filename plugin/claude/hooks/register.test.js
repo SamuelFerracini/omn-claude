@@ -364,15 +364,15 @@ test('render mode: halfblock unless Terminal.app or forced', () => {
   assert.equal(renderModeOf({}), 'halfblock')
   assert.equal(renderModeOf(undefined), 'halfblock')
   assert.equal(renderModeOf({ termProgram: 'iTerm.app' }), 'halfblock')
-  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'blocks')
-  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'blocks')
+  assert.equal(renderModeOf({ termProgram: 'Apple_Terminal' }), 'solid')
+  assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.apple.Terminal' }), 'solid')
   assert.equal(renderModeOf({ termProgram: 'tmux', bundleId: 'com.googlecode.iterm2' }), 'halfblock')
 })
 
 test('render mode: OMN_PET_RENDER wins both ways', () => {
   assert.equal(renderModeOf({ override: 'blocks' }), 'blocks')
   assert.equal(renderModeOf({ override: 'halfblock', termProgram: 'Apple_Terminal' }), 'halfblock')
-  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'blocks')
+  assert.equal(renderModeOf({ override: 'junk', termProgram: 'Apple_Terminal' }), 'solid')
   assert.equal(renderModeOf({ override: 'compact' }), 'compact')
   assert.equal(renderModeOf({ override: 'image', termProgram: 'Apple_Terminal' }), 'image')
 })
@@ -1741,4 +1741,17 @@ test('food: the bite token draws over the hard hat on every bite frame', () => {
   }
   assert.ok(overlaps > 0, 'the token passes through the hat rows')
   __state({ bite: null })
+})
+
+test('solid mode: uniform cell is a space with background, two-color cell is ▀ or ▄', () => {
+  const px = Array.from({ length: 16 * 18 }, () => [10, 20, 30]).flat()
+  const at = (x, y, c) => px.splice((y * 16 + x) * 3, 3, ...c)
+  at(3, 4, [200, 100, 50]) // cell (2,3): top differs from bottom
+  setRenderEnv({ override: 'solid', colorterm: '24bit' })
+  const cells = cellsOf(rasterOf(Buffer.from(Uint8Array.from(px)).toString('base64')))
+  setRenderEnv({})
+  assert.equal(cells.length, 16 * 9 * 3)
+  assert.deepEqual([cells[0], cells[1], cells[2]], [0x20, 0x01000000, (10 << 16) | (20 << 8) | 30])
+  const i = (2 * 16 + 3) * 3
+  assert.ok(cells[i] === 0x2580 || cells[i] === 0x2584)
 })

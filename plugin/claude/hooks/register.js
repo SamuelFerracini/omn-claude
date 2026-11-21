@@ -2,7 +2,7 @@
 // The signature is ssh-keygen -Y sign -n omn over the same bytes as proto.Canonical.
 
 const SERVER = 'https://omn.sh'
-const VERSION = '0.4.37'
+const VERSION = '0.4.39'
 const VERSION_URL = 'https://raw.githubusercontent.com/SamuelFerracini/omn-claude/main/plugin/claude/.claude-plugin/plugin.json'
 const PANE = 'omn'
 const wideBandColumns = 60
@@ -915,13 +915,13 @@ function unit(n, div, suffix) {
   return frac === 0 ? whole + suffix : whole + '.' + frac + suffix
 }
 
-// OMN_PET_RENDER=image|compact|blocks|halfblock forces the mode (SSH from a Mac forwards no TERM_PROGRAM).
-// Else Terminal.app gets blocks. tmux hides TERM_PROGRAM, so the bundle id counts too.
+// OMN_PET_RENDER=image|compact|blocks|halfblock|solid forces the mode (SSH from a Mac forwards no TERM_PROGRAM).
+// Else Terminal.app gets solid. tmux hides TERM_PROGRAM, so the bundle id counts too.
 export function renderModeOf(env) {
   const e = env || {}
   const forced = String(e.override || '').trim().toLowerCase()
-  if (forced === 'blocks' || forced === 'compact' || forced === 'halfblock' || forced === 'image') return forced
-  if (e.termProgram === 'Apple_Terminal' || e.bundleId === 'com.apple.Terminal') return 'blocks'
+  if (forced === 'blocks' || forced === 'compact' || forced === 'halfblock' || forced === 'solid' || forced === 'image') return forced
+  if (e.termProgram === 'Apple_Terminal' || e.bundleId === 'com.apple.Terminal') return 'solid'
   return 'halfblock'
 }
 
@@ -1040,6 +1040,21 @@ export function rasterOf(b64, mode) {
         const top = rgb(raw, ((2 * y) * cols + x) * 3)
         const bot = rgb(raw, ((2 * y + 1) * cols + x) * 3)
         nums.push(0x20, 0x01000000, snap(top === bg ? bot : bot === bg ? top : mix(top, bot)))
+      }
+    }
+    return bytesB64(new Uint8Array(Uint32Array.from(nums).buffer))
+  }
+  if (m === 'solid') {
+    // Two-color cell: the glyph whose background matches the vertical neighbor (▄ if top matches the cell above and bottom does not match the one below, else ▀).
+    const snap = truecolorOn() ? (c) => c : nearest256
+    const at = (py, x) => (py < 0 || py > 17 ? -1 : rgb(raw, (py * cols + x) * 3))
+    for (let y = 0; y < 9; y++) {
+      for (let x = 0; x < cols; x++) {
+        const top = at(2 * y, x)
+        const bot = at(2 * y + 1, x)
+        if (top === bot) { nums.push(0x20, 0x01000000, snap(top)); continue }
+        const lowerBg = bot === at(2 * y + 2, x) || top !== at(2 * y - 1, x)
+        nums.push(lowerBg ? 0x2580 : 0x2584, snap(lowerBg ? top : bot), snap(lowerBg ? bot : top))
       }
     }
     return bytesB64(new Uint8Array(Uint32Array.from(nums).buffer))
